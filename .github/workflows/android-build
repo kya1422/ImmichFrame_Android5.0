@@ -1,0 +1,37 @@
+name: Android Build
+
+# ビルドを走らせるタイミング
+on:
+  push:
+    branches: [ "main" ]        # main に push したら自動ビルド
+  workflow_dispatch:            # Actionsタブから手動実行も可能にする
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      # signing.properties が無い状態だと release ビルドは署名で失敗するため
+      # まずは署名不要な debug APK をビルド・配布する構成にしています。
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImmichFrame-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
