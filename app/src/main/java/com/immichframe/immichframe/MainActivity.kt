@@ -992,12 +992,17 @@ class MainActivity : AppCompatActivity() {
         alarmManager.cancel(pendingIntent)
         val next = Helpers.nextActiveStart(schedule, Calendar.getInstance()) ?: return
         try {
-            // setExactAndAllowWhileIdle is available since API 23 (minSdk) and wakes from Doze
-            alarmManager.setExactAndAllowWhileIdle(
-                AlarmManager.RTC_WAKEUP,
-                next.timeInMillis,
-                pendingIntent,
-            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                // setExactAndAllowWhileIdle is available since API 23 and wakes from Doze
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    next.timeInMillis,
+                    pendingIntent,
+                )
+            } else {
+                 // API 21/22 has no Doze mode to work around; setExact is sufficient.
+                alarmManager.setExact(AlarmManager.RTC_WAKEUP, next.timeInMillis, pendingIntent)
+            }
         } catch (e: SecurityException) {
             // Exact alarms not permitted (API 31+); fall back to an inexact wake (may fire a bit late)
             alarmManager.set(AlarmManager.RTC_WAKEUP, next.timeInMillis, pendingIntent)
