@@ -129,6 +129,18 @@ class MainActivity : AppCompatActivity() {
         AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
         super.onCreate(savedInstanceState)
 
+        // Old Android versions (< API 24 or with an outdated system TLS stack) can fail
+        // HTTPS handshakes silently against modern servers (e.g. Cloudflare) because their
+        // bundled root certificates / TLS provider are out of date. This patches the
+        // process-wide security provider using Play Services' updated implementation.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            try {
+                com.google.android.gms.security.ProviderInstaller.installIfNeeded(applicationContext)
+            } catch (e: Exception) {
+                Log.w("MainActivity", "ProviderInstaller failed, HTTPS to modern servers may not work: ${e.message}")
+            }
+        }
+        
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.main_view)
         hideSystemUI()
