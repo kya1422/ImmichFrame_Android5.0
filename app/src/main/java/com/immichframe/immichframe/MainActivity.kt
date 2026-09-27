@@ -129,15 +129,15 @@ class MainActivity : AppCompatActivity() {
         AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
         super.onCreate(savedInstanceState)
 
-        // Old Android versions (< API 24 or with an outdated system TLS stack) can fail
-        // HTTPS handshakes silently against modern servers (e.g. Cloudflare) because their
-        // bundled root certificates / TLS provider are out of date. This patches the
-        // process-wide security provider using Play Services' updated implementation.
+        // Old Android versions (< API 24) have an outdated system TLS stack and can fail
+        // HTTPS handshakes silently against modern servers (e.g. Cloudflare). Rather than
+        // relying on Google Play services to patch this (unreliable on devices whose Play
+        // services are no longer updated), install a bundled, up-to-date TLS provider.
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
             try {
-                com.google.android.gms.security.ProviderInstaller.installIfNeeded(applicationContext)
+                 java.security.Security.insertProviderAt(org.conscrypt.Conscrypt.newProvider(), 1)
             } catch (e: Exception) {
-                Log.w("MainActivity", "ProviderInstaller failed, HTTPS to modern servers may not work: ${e.message}")
+                Log.w("MainActivity", "Failed to install Conscrypt TLS provider, HTTPS to modern servers may not work: ${e.message}")
             }
         }
         
