@@ -135,12 +135,12 @@ class MainActivity : AppCompatActivity() {
         // services are no longer updated), install a bundled, up-to-date TLS provider.
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
             try {
-                 java.security.Security.insertProviderAt(org.conscrypt.Conscrypt.newProvider(), 1)
+                java.security.Security.insertProviderAt(org.conscrypt.Conscrypt.newProvider(), 1)
             } catch (e: Exception) {
                 Log.w("MainActivity", "Failed to install Conscrypt TLS provider, HTTPS to modern servers may not work: ${e.message}")
             }
         }
-        
+
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.main_view)
         hideSystemUI()
@@ -1012,7 +1012,7 @@ class MainActivity : AppCompatActivity() {
                     pendingIntent,
                 )
             } else {
-                 // API 21/22 has no Doze mode to work around; setExact is sufficient.
+                // API 21/22 has no Doze mode to work around; setExact is sufficient.
                 alarmManager.setExact(AlarmManager.RTC_WAKEUP, next.timeInMillis, pendingIntent)
             }
         } catch (e: SecurityException) {
