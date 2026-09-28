@@ -5,7 +5,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.os.Build
 import android.util.Base64
+import android.util.Log
 import retrofit2.Call
 import retrofit2.http.GET
 import androidx.core.graphics.scale
@@ -15,8 +17,17 @@ import org.json.JSONArray
 import org.json.JSONObject
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import java.io.ByteArrayInputStream
+import java.security.KeyStore
+import java.security.Security
+import java.security.cert.CertificateFactory
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLSocketFactory
+import javax.net.ssl.TrustManager
+import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509TrustManager
 
 object Helpers {
     fun cssFontSizeToSp(cssSize: String?, context: Context, baseFontSizePx: Float = 16f): Float {
@@ -159,10 +170,75 @@ object Helpers {
         fun getWeather(): Call<Weather>
     }
 
+    /**
+     * Old Android versions (< 8.0) ship an outdated TLS stack and CA list. Modern servers
+     * (e.g. behind Cloudflare) then fail with "Trust anchor for certification path not found".
+     * On those devices we install a bundled Conscrypt provider and trust the system CAs plus
+     * the Mozilla CA bundle shipped in this app (resources/cacert.pem).
+     * Returns null on modern Android, where the platform defaults are fine.
+     */
+    private class LegacyTls(val socketFactory: SSLSocketFactory, val trustManager: X509TrustManager)
+
+    private val legacyTls: LegacyTls? by lazy {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) return@lazy null
+        try {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N && Security.getProvider("Conscrypt") == null) {
+                Security.insertProviderAt(org.conscrypt.Conscrypt.newProvider(), 1)
+            }
+
+            val keyStore = KeyStore.getInstance(KeyStore.getDefaultType()).apply { load(null, null) }
+
+            // 1) Certificates already trusted by the device (system + user-installed)
+            try {
+                val systemStore = KeyStore.getInstance("AndroidCAStore").apply { load(null, null) }
+                for (alias in systemStore.aliases()) {
+                    systemStore.getCertificate(alias)?.let { keyStore.setCertificateEntry("sys-$alias", it) }
+                }
+            } catch (e: Exception) {
+                Log.w("Helpers", "Could not read system CA store: ${e.message}")
+            }
+
+            // 2) Bundled Mozilla CA list (roots missing on old devices, e.g. ISRG Root X1)
+            val pem = Helpers::class.java.classLoader?.getResourceAsStream("cacert.pem")
+                ?.use { String(it.readBytes(), Charsets.US_ASCII) }
+            var bundled = 0
+            if (pem != null) {
+                val factory = CertificateFactory.getInstance("X.509")
+                val regex = Regex("-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----", RegexOption.DOT_MATCHES_ALL)
+                for ((i, m) in regex.findAll(pem).withIndex()) {
+                    try {
+                        val der = Base64.decode(m.groupValues[1], Base64.DEFAULT)
+                        val cert = factory.generateCertificate(ByteArrayInputStream(der))
+                        keyStore.setCertificateEntry("bundled-$i", cert)
+                        bundled++
+                    } catch (e: Exception) {
+                        Log.w("Helpers", "Skipping bundled certificate #$i: ${e.message}")
+                    }
+                }
+            }
+            Log.i("Helpers", "Legacy TLS enabled, bundled CA certificates loaded: $bundled")
+
+            val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+            tmf.init(keyStore)
+            val trustManager = tmf.trustManagers.filterIsInstance<X509TrustManager>().first()
+            val sslContext = SSLContext.getInstance("TLS")
+            sslContext.init(null, arrayOf<TrustManager>(trustManager), null)
+            LegacyTls(sslContext.socketFactory, trustManager)
+        } catch (e: Exception) {
+            Log.w("Helpers", "Legacy TLS setup failed, using platform defaults: ${e.message}")
+            null
+        }
+    }
+
+    private fun OkHttpClient.Builder.applyLegacyTls(): OkHttpClient.Builder {
+        legacyTls?.let { sslSocketFactory(it.socketFactory, it.trustManager) }
+        return this
+    }
+
     fun createRetrofit(baseUrl: String, authSecret: String): Retrofit {
         val normalizedBaseUrl = if (!baseUrl.endsWith("/")) "$baseUrl/" else baseUrl
 
-        val client = OkHttpClient.Builder().addInterceptor { chain ->
+        val client = OkHttpClient.Builder().applyLegacyTls().addInterceptor { chain ->
             val originalRequest = chain.request()
 
             val request = if (authSecret.isNotEmpty()) {
@@ -179,10 +255,13 @@ object Helpers {
             .addConverterFactory(GsonConverterFactory.create()).build()
     }
 
-    private val reachabilityClient = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(5, TimeUnit.SECONDS)
-        .build()
+    private val reachabilityClient by lazy {
+        OkHttpClient.Builder()
+            .applyLegacyTls()
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(5, TimeUnit.SECONDS)
+            .build()
+    }
 
     fun isServerReachable(url: String): Boolean {
         return try {
