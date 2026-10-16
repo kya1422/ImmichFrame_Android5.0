@@ -3,4 +3,25 @@
     <string name="device_admin_description">Allows ImmichFrame to turn off the screen and let the
         device sleep during inactive hours defined in the Active Schedule.</string>
     <string name="active_schedule_always">Always active — tap to add rules</string>
+
+    <string name="client_cert_not_imported">No client certificate imported.\nTap to select a .p12/.pfx
+        file, or the .pem certificate and private key files of the client certificate.</string>
+    <string name="client_cert_select_title">Import client certificate</string>
+    <string name="client_cert_password_hint">Password</string>
+    <string name="client_cert_password_title">PKCS#12 password</string>
+    <string name="client_cert_password_message">Enter the password of the selected .p12/.pfx file
+        (leave empty if the file has no password).</string>
+    <string name="client_cert_imported_title">Client certificate imported</string>
+    <string name="client_cert_imported_message">%1$s\n\nClose the settings to use it.</string>
+    <string name="client_cert_import_failed_title">Import failed</string>
+    <string name="client_cert_import_failed_message">The selected file(s) could not be used:\n\n%1$s</string>
+    <string name="client_cert_unreadable">The selected file(s) could not be read.</string>
+    <string name="client_cert_clear_title">Remove client certificate?</string>
+    <string name="client_cert_clear_message">The imported client certificate and its private key
+        will be deleted from this device.</string>
+    <string name="client_cert_clear_confirm">Remove</string>
+    <string name="client_cert_removed">Client certificate removed.</string>
+    <string name="client_cert_needs_import">Import a client certificate first.</string>
+    <string name="client_cert_read_error">The stored client certificate could not be read. Please
+        import it again.</string>
 </resources>

@@ -20,6 +20,7 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
+import android.webkit.ClientCertRequest
 import android.webkit.WebViewClient
 import android.widget.ImageView
 import android.widget.TextView
@@ -501,6 +502,20 @@ class ScreenSaverService : DreamService() {
                     return false
                 }
 
+                override fun onReceivedClientCertRequest(
+                    view: WebView?,
+                    request: ClientCertRequest?
+                ) {
+                    // Cloudflare mTLS (and friends) ask for a client certificate during the TLS
+                    // handshake; answer it with the certificate imported in the settings.
+                    if (request == null) return
+                    ClientCertStore.proceedWithClientCertificate(
+                        this@ScreenSaverService,
+                        request,
+                        savedUrl.toUri().host
+                    )
+                }
+
                 override fun onReceivedError(
                     view: WebView?,
                     request: WebResourceRequest?,
@@ -527,7 +542,7 @@ class ScreenSaverService : DreamService() {
             webView.settings.domStorageEnabled = true
             loadWebViewWithRetry(savedUrl)
         } else {
-            retrofit = Helpers.createRetrofit(savedUrl, authSecret)
+            retrofit = Helpers.createRetrofit(this, savedUrl, authSecret)
             apiService = retrofit!!.create(Helpers.ApiService::class.java)
             getServerSettings(
                 onSuccess = { settings ->
@@ -628,7 +643,7 @@ class ScreenSaverService : DreamService() {
     ) {
         webViewRetryScope?.launch {
             val reachable = withContext(Dispatchers.IO) {
-                Helpers.isServerReachable(url)
+                Helpers.isServerReachable(this@ScreenSaverService, url)
             }
 
             if (reachable) {

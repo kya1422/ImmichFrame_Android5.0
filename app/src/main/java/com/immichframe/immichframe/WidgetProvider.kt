@@ -78,7 +78,7 @@ class WidgetProvider : AppWidgetProvider() {
                 val authSecret = prefs.getString("authSecret", "") ?: ""
 
                 if (savedUrl.isNotEmpty()) {
-                    val retrofit = Helpers.createRetrofit(savedUrl, authSecret)
+                    val retrofit = Helpers.createRetrofit(context, savedUrl, authSecret)
                     val apiService = retrofit.create(Helpers.ApiService::class.java)
 
                     CoroutineScope(Dispatchers.IO).launch {

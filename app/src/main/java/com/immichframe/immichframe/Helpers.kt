@@ -230,15 +230,64 @@ object Helpers {
         }
     }
 
-    private fun OkHttpClient.Builder.applyLegacyTls(): OkHttpClient.Builder {
-        legacyTls?.let { sslSocketFactory(it.socketFactory, it.trustManager) }
+    /**
+     * SSL context that combines the (optional) client certificate used for mTLS and the
+     * (optional) bundled CA list used on ancient Android versions. Returns null when the platform
+     * defaults are good enough, i.e. no client certificate and modern Android.
+     */
+    private class TlsConfig(val socketFactory: SSLSocketFactory, val trustManager: X509TrustManager)
+
+    private var cachedTls: TlsConfig? = null
+    private var cachedTlsKey: String? = null
+
+    @Synchronized
+    private fun tlsConfig(context: Context?): TlsConfig? {
+        val legacy = legacyTls
+        val stamp = context?.let { ClientCertStore.stamp(it) }
+        if (stamp == null && legacy == null) {
+            cachedTls = null
+            cachedTlsKey = null
+            return null
+        }
+
+        val cacheKey = "${stamp ?: "no-client-cert"}|${legacy != null}"
+        if (cacheKey == cachedTlsKey) return cachedTls
+
+        val keyManagers = if (context != null && stamp != null) ClientCertStore.keyManagers(context) else null
+        val trustManagers = legacy?.let { arrayOf<TrustManager>(it.trustManager) }
+        val sslContext = SSLContext.getInstance("TLS")
+        sslContext.init(keyManagers, trustManagers, null)
+        val trustManager = legacy?.trustManager ?: defaultTrustManager()
+        val config = TlsConfig(sslContext.socketFactory, trustManager)
+        cachedTls = config
+        cachedTlsKey = cacheKey
+        Log.i(
+            "Helpers",
+            "TLS configured (client certificate: ${keyManagers != null}, bundled CA list: ${legacy != null})"
+        )
+        return config
+    }
+
+    private fun defaultTrustManager(): X509TrustManager {
+        val factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+        factory.init(null as KeyStore?)
+        return factory.trustManagers.filterIsInstance<X509TrustManager>().first()
+    }
+
+    private fun OkHttpClient.Builder.applyTls(context: Context?): OkHttpClient.Builder {
+        val config = tlsConfig(context)
+        if (config != null) {
+            sslSocketFactory(config.socketFactory, config.trustManager)
+        } else {
+            legacyTls?.let { sslSocketFactory(it.socketFactory, it.trustManager) }
+        }
         return this
     }
 
-    fun createRetrofit(baseUrl: String, authSecret: String): Retrofit {
+    fun createRetrofit(context: Context, baseUrl: String, authSecret: String): Retrofit {
         val normalizedBaseUrl = if (!baseUrl.endsWith("/")) "$baseUrl/" else baseUrl
 
-        val client = OkHttpClient.Builder().applyLegacyTls().addInterceptor { chain ->
+        val client = OkHttpClient.Builder().applyTls(context).addInterceptor { chain ->
             val originalRequest = chain.request()
 
             val request = if (authSecret.isNotEmpty()) {
@@ -255,21 +304,30 @@ object Helpers {
             .addConverterFactory(GsonConverterFactory.create()).build()
     }
 
-    private val reachabilityClient by lazy {
-        OkHttpClient.Builder()
-            .applyLegacyTls()
+    private var reachabilityClient: OkHttpClient? = null
+    private var reachabilityClientKey: String? = null
+
+    private fun reachabilityClient(context: Context?): OkHttpClient {
+        val key = "${context?.let { ClientCertStore.stamp(it) } ?: "none"}|${Build.VERSION.SDK_INT < Build.VERSION_CODES.O}"
+        val cached = reachabilityClient
+        if (cached != null && key == reachabilityClientKey) return cached
+        val client = OkHttpClient.Builder()
+            .applyTls(context)
             .connectTimeout(5, TimeUnit.SECONDS)
             .readTimeout(5, TimeUnit.SECONDS)
             .build()
+        reachabilityClient = client
+        reachabilityClientKey = key
+        return client
     }
 
-    fun isServerReachable(url: String): Boolean {
+    fun isServerReachable(context: Context, url: String): Boolean {
         return try {
             val request = Request.Builder()
                 .url(url)
                 .head()
                 .build()
-            reachabilityClient.newCall(request).execute().use {
+            reachabilityClient(context).newCall(request).execute().use {
                 true // any HTTP response = reachable
             }
         } catch (e: Exception) {

@@ -28,6 +28,7 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.webkit.ClientCertRequest
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -593,6 +594,20 @@ class MainActivity : AppCompatActivity() {
                     return false
                 }
 
+                override fun onReceivedClientCertRequest(
+                    view: WebView?,
+                    request: ClientCertRequest?
+                ) {
+                    // Cloudflare mTLS (and friends) ask for a client certificate during the TLS
+                    // handshake; answer it with the certificate imported in the settings.
+                    if (request == null) return
+                    ClientCertStore.proceedWithClientCertificate(
+                        this@MainActivity,
+                        request,
+                        savedUrl.toUri().host
+                    )
+                }
+
                 override fun onReceivedError(
                     view: WebView?,
                     request: WebResourceRequest?,
@@ -632,7 +647,7 @@ class MainActivity : AppCompatActivity() {
             webView.settings.domStorageEnabled = true
             loadWebViewWithRetry(savedUrl)
         } else {
-            retrofit = Helpers.createRetrofit(savedUrl, authSecret)
+            retrofit = Helpers.createRetrofit(this, savedUrl, authSecret)
             apiService = retrofit!!.create(Helpers.ApiService::class.java)
             getServerSettings(
                 onSuccess = { settings ->
@@ -1067,7 +1082,7 @@ class MainActivity : AppCompatActivity() {
     ) {
         lifecycleScope.launch {
             val reachable = withContext(Dispatchers.IO) {
-                Helpers.isServerReachable(url)
+                Helpers.isServerReachable(this@MainActivity, url)
             }
 
             if (reachable) {

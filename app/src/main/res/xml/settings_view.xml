@@ -12,6 +12,21 @@
             android:title="Authorization Secret" />
     </PreferenceCategory>
 
+    <PreferenceCategory android:title="Client Certificate (mTLS)">
+        <SwitchPreferenceCompat
+            android:defaultValue="false"
+            android:key="clientCertEnabled"
+            android:summary="Present the imported client certificate to Cloudflare (or another mTLS protected proxy)"
+            android:title="Use Client Certificate?" />
+        <Preference
+            android:key="client_cert_import"
+            android:summary="@string/client_cert_not_imported"
+            android:title="Import Client Certificate" />
+        <Preference
+            android:key="client_cert_clear"
+            android:title="Remove Client Certificate" />
+    </PreferenceCategory>
+
     <PreferenceCategory android:title="Display Options">
         <SwitchPreferenceCompat
             android:defaultValue="true"
