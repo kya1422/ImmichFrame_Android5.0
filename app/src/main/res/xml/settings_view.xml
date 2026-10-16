@@ -63,6 +63,21 @@
             android:title="Enable Screen-Off Permission" />
     </PreferenceCategory>
 
+    <PreferenceCategory android:title="Reliability">
+        <SwitchPreferenceCompat
+            android:defaultValue="false"
+            android:key="keepAlive"
+            android:summary="@string/keepalive_summary"
+            android:title="Keep-Alive Service" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="Diagnostics">
+        <Preference
+            android:key="diagnostics"
+            android:summary="@string/diagnostics_summary"
+            android:title="Open Diagnostics" />
+    </PreferenceCategory>
+
     <PreferenceCategory android:title="Android Settings">
         <Preference
             android:defaultValue=""

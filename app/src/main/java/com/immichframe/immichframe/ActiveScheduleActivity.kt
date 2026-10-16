@@ -31,7 +31,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
@@ -108,6 +113,13 @@ class ActiveScheduleActivity : ComponentActivity() {
                             .apply()
                         finish()
                     },
+                    onAutoSave = { schedule ->
+                        // Backing out of the editor used to throw the changes away silently.
+                        // The editor now persists what it has when it is closed.
+                        prefs.edit()
+                            .putString("activeSchedule", Helpers.serializeActiveSchedule(schedule))
+                            .apply()
+                    },
                 )
             }
         }
@@ -119,11 +131,37 @@ class ActiveScheduleActivity : ComponentActivity() {
 private fun ScheduleEditorScreen(
     initial: Helpers.ActiveSchedule,
     onSave: (Helpers.ActiveSchedule) -> Unit,
+    onAutoSave: (Helpers.ActiveSchedule) -> Unit,
 ) {
     val context = LocalContext.current
     val rules = remember {
         mutableStateListOf<RuleState>().apply {
             initial.rules.forEach { add(RuleState(it.days, it.ranges)) }
+        }
+    }
+    var lastSavedJson by remember { mutableStateOf(Helpers.serializeActiveSchedule(initial)) }
+
+    fun currentSnapshot(): Helpers.ActiveSchedule = Helpers.ActiveSchedule(
+        rules.map { rule ->
+            Helpers.ActiveRule(
+                rule.days.toSortedSet(),
+                rule.ranges.map { Helpers.ActiveRange(it.first, it.second) },
+            )
+        }
+    )
+
+    val autoSave = rememberUpdatedState(onAutoSave)
+    val save = rememberUpdatedState(onSave)
+    // Persist whatever is on screen when the editor goes away (back button, process death is
+    // covered by onSave/auto save as well). Invalid drafts are still dropped, as before.
+    DisposableEffect(Unit) {
+        onDispose {
+            if (validateRules(rules) != null) return@onDispose
+            val json = Helpers.serializeActiveSchedule(currentSnapshot())
+            if (json != lastSavedJson) {
+                FrameLog.i("schedule", "Editor closed without Save -> auto-saving the draft")
+                autoSave.value(currentSnapshot())
+            }
         }
     }
 
@@ -138,13 +176,9 @@ private fun ScheduleEditorScreen(
                             Toast.makeText(context, error, Toast.LENGTH_LONG).show()
                             return@TextButton
                         }
-                        val cleaned = rules.map { rule ->
-                            Helpers.ActiveRule(
-                                rule.days.toSortedSet(),
-                                rule.ranges.map { Helpers.ActiveRange(it.first, it.second) },
-                            )
-                        }
-                        onSave(Helpers.ActiveSchedule(cleaned))
+                        val schedule = currentSnapshot()
+                        lastSavedJson = Helpers.serializeActiveSchedule(schedule)
+                        save.value(schedule)
                     }) {
                         Text("Save")
                     }

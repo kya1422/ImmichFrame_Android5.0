@@ -16,6 +16,48 @@
 ## 📄 Documentation
 You can find the documentation [here](https://immichframe.dev).
 
+## 🗓 Active Times (scheduled screen off/on)
+
+The frame can switch itself off (screen off + device lock) outside the hours configured under
+**Settings → Active Times** and come back on at the next start time.
+
+What the app does to make that reliable:
+
+* **Diagnostics screen** (Settings → Diagnostics): shows the stored schedule, the next sleep/wake
+  time, whether a wake-up alarm is armed, whether the device admin really holds the force-lock
+  policy, the Android/device info and a rolling event log (kept on the device, shareable).
+  Buttons: *Arm wake test (+1 min)*, *Sleep now + wake in 30 s*, *Check now*, *Clear log*.
+* **Wake-up alarm via `setAlarmClock()`**: the most reliable mechanism on every Android version,
+  visible to the system (and to the Diagnostics screen). Falls back to `setExact()`/`set()`.
+* **Keep-Alive Service** (Settings → Reliability): optional foreground service for devices that
+  kill backgrounded apps (Huawei/EMUI, Xiaomi/MIUI, ...). It shows a permanent notification,
+  re-arms the wake alarm if the system drops it, re-checks the schedule every minute and stops
+  itself outside the active hours.
+* **Boot receiver**: re-arms the alarm and restarts the keep-alive service after a reboot.
+* **Auto-save** in the schedule editor: leaving the editor with the back button no longer throws
+  the draft away.
+* The schedule is re-evaluated immediately when the settings change, and the Active Times summary
+  shows the next sleep/wake time.
+
+### Huawei / EMUI (e.g. dtab d-01H, Android 5.1)
+
+EMUI closes background apps when the screen is locked, which also cancels the wake-up alarm.
+In addition to enabling the keep-alive service:
+
+1. Open **Phone Manager (端末管理)** → **Protected apps (保護されたアプリ)** and protect ImmichFrame
+   (EMUI ≤ 4.9). On newer EMUI: **Battery → App launch** → set ImmichFrame to *Manage manually*
+   with *Auto-launch* and *Run in background* enabled.
+2. Allow ImmichFrame to auto-start after a reboot if a *Startup manager* exists.
+
+### Known limitations
+
+* Android 10+ forbids bringing an activity to the foreground from the background. On those
+  devices the wake-up alarm still fires (and the event log shows it), but the screen may only
+  light up when the app is already visible (e.g. as the launcher/home app or with the keep-alive
+  service running).
+* The screensaver (Daydream) mode is started by Android itself, so the Active Times schedule
+  cannot switch it on; it is closed when the frame is supposed to sleep.
+
 ## 🔐 Client certificate (Cloudflare mTLS)
 
 Servers that are protected by Cloudflare Access "Mutual TLS" (or any other proxy that asks for a

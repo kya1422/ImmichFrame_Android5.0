@@ -428,6 +428,31 @@ object Helpers {
         return false
     }
 
+    /** A moment at which the frame switches between active and inactive. */
+    data class Transition(val at: Calendar, val becomesActive: Boolean)
+
+    /**
+     * Returns the next moment (after [now]) at which [isActiveNow] changes, or null when the
+     * schedule has no rules. Scans minute-by-minute up to 8 days ahead, so it also covers the
+     * wake-up after an overnight inactive range.
+     */
+    fun nextTransition(schedule: ActiveSchedule, now: Calendar): Transition? {
+        if (schedule.rules.isEmpty()) return null
+        val cursor = now.clone() as Calendar
+        cursor.set(Calendar.SECOND, 0)
+        cursor.set(Calendar.MILLISECOND, 0)
+        cursor.add(Calendar.MINUTE, 1)
+        val maxSteps = 8 * 24 * 60
+        var previous = isActiveNow(schedule, now)
+        repeat(maxSteps) {
+            val current = isActiveNow(schedule, cursor)
+            if (current != previous) return Transition(cursor.clone() as Calendar, current)
+            previous = current
+            cursor.add(Calendar.MINUTE, 1)
+        }
+        return null
+    }
+
     /**
      * Returns the next time (after [now]) at which the schedule becomes active, or null if the
      * schedule has no rules (always active) or no active period is found within the next week.

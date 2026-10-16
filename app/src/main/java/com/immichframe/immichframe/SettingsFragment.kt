@@ -108,6 +108,25 @@ class SettingsFragment : PreferenceFragmentCompat() {
             }
             true
         }
+        val btnDiagnostics = findPreference<Preference>("diagnostics")
+        btnDiagnostics?.setOnPreferenceClickListener {
+            startActivity(Intent(requireContext(), DiagnosticsActivity::class.java))
+            true
+        }
+
+        val chkKeepAlive = findPreference<SwitchPreferenceCompat>("keepAlive")
+        chkKeepAlive?.setOnPreferenceChangeListener { _, newValue ->
+            val enabled = newValue as Boolean
+            if (enabled) {
+                FrameKeepAliveService.start(requireContext())
+                Toast.makeText(requireContext(), R.string.keepalive_started_toast, Toast.LENGTH_LONG)
+                    .show()
+            } else {
+                FrameKeepAliveService.stop(requireContext())
+            }
+            true
+        }
+
         val chkClientCert = findPreference<SwitchPreferenceCompat>("clientCertEnabled")
         val importClientCert = findPreference<Preference>("client_cert_import")
         val clearClientCert = findPreference<Preference>("client_cert_clear")
@@ -309,9 +328,23 @@ class SettingsFragment : PreferenceFragmentCompat() {
 
     private fun updateScheduleSummary(preference: Preference?) {
         val pref = preference ?: return
-        val json = PreferenceManager.getDefaultSharedPreferences(requireContext())
+        val context = requireContext()
+        val json = PreferenceManager.getDefaultSharedPreferences(context)
             .getString("activeSchedule", null)
-        pref.summary = summarizeSchedule(json)
+        val rules = summarizeSchedule(json)
+        val activeTimes = PreferenceManager.getDefaultSharedPreferences(context)
+            .getBoolean("activeTimes", false)
+        val next = if (activeTimes) ActiveScheduleManager.nextTransition(context) else null
+        pref.summary = if (next == null) {
+            rules
+        } else {
+            val what = if (next.becomesActive) {
+                getString(R.string.schedule_next_wake)
+            } else {
+                getString(R.string.schedule_next_sleep)
+            }
+            "$rules\n$what: ${ActiveScheduleManager.formatShort(next.at.timeInMillis)}"
+        }
     }
 
     private fun summarizeSchedule(json: String?): String {

@@ -3,7 +3,10 @@ package com.immichframe.immichframe
 import android.animation.ObjectAnimator
 import android.animation.PropertyValuesHolder
 import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Handler
@@ -84,6 +87,20 @@ class ScreenSaverService : DreamService() {
     private var isShowingFirst = true
     private var zoomAnimator: ObjectAnimator? = null
 
+    /**
+     * The diagnostics self-test sends frame on/off commands over this receiver; the dream mode
+     * does not touch the schedule itself (Android decides when the dream starts), but it must be
+     * able to stop immediately when the frame is supposed to sleep.
+     */
+    private val frameCommandReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != ScheduleWakeReceiver.ACTION_FRAME_COMMAND) return
+            val active = intent.getBooleanExtra(ScheduleWakeReceiver.EXTRA_FRAME_ACTIVE, true)
+            FrameLog.i("screensaver", "Frame command received: active=$active")
+            if (!active) finish()
+        }
+    }
+
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onDreamingStarted() {
@@ -105,12 +122,20 @@ class ScreenSaverService : DreamService() {
             true
         }
 
+        registerReceiver(
+            frameCommandReceiver,
+            IntentFilter(ScheduleWakeReceiver.ACTION_FRAME_COMMAND),
+        )
+        FrameLog.init(applicationContext)
+        FrameLog.i("screensaver", "Screensaver (Daydream) started")
         acquireWakeLock()
         loadSettings()
     }
 
     override fun onDreamingStopped() {
         super.onDreamingStopped()
+        runCatching { unregisterReceiver(frameCommandReceiver) }
+        FrameLog.i("screensaver", "Screensaver (Daydream) stopped")
         webViewRetryScope?.cancel()
         webViewRetryScope = null
         stopImageTimer()

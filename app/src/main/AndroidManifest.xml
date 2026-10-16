@@ -5,6 +5,10 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature
         android:name="android.hardware.touchscreen"
@@ -66,6 +70,11 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".DiagnosticsActivity"
+            android:exported="false"
+            android:label="@string/diag_title" />
+
         <activity android:name=".WidgetConfigActivity"
             android:label="Widget Configuration"
             android:theme="@style/Theme.WidgetConfigDialog" />
@@ -102,6 +111,28 @@
                 <action android:name="com.immichframe.immichframe.ACTION_SCHEDULE_WAKE" />
             </intent-filter>
         </receiver>
+
+        <!-- Re-arms the wake alarm (and the keep-alive service) after a reboot -->
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Optional: keeps the process alive on devices with aggressive power saving (EMUI etc.) -->
+        <service
+            android:name=".FrameKeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the photo frame running during its configured active hours so the scheduled screen on/off works reliably." />
+        </service>
     </application>
 
 </manifest>

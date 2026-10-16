@@ -59,6 +59,15 @@ import androidx.core.net.toUri
 import androidx.core.view.isVisible
 
 class MainActivity : AppCompatActivity() {
+    companion object {
+        private const val TAG = "MainActivity"
+
+        /** True while a MainActivity instance exists; shown on the diagnostics screen. */
+        @Volatile
+        var isFrameRunning = false
+            private set
+    }
+
     private lateinit var webView: WebView
     private lateinit var imageView1: ImageView
     private lateinit var imageView2: ImageView
@@ -115,8 +124,38 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+
+    /**
+     * Handles the frame on/off commands sent by the wake receiver (used by the diagnostics
+     * self-test) and by the screensaver service.
+     */
+    private val frameCommandReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != ScheduleWakeReceiver.ACTION_FRAME_COMMAND) return
+            val active = intent.getBooleanExtra(ScheduleWakeReceiver.EXTRA_FRAME_ACTIVE, true)
+            FrameLog.i(TAG, "Frame command received: active=$active")
+            isManualOverride = false
+            setFrameActive(active)
+        }
+    }
+
+    /**
+     * Reacts to schedule changes while the activity is running. This is what makes disabling
+     * "Active Times" take effect immediately, and it starts the periodic check even when the
+     * settings screen was left with the back button (which never delivers RESULT_OK).
+     */
+    private val prefsListener =
+        android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == "activeTimes" || key == "activeSchedule") {
+                handler.post { applyScheduleFromPreferences() }
+            }
+        }
     private var isShowingFirst = true
     private var zoomAnimator: ObjectAnimator? = null
+
+    /** Whether the frame is currently in the foreground (used to avoid sleeping while the user
+     *  is on the settings screen). */
+    private var isActivityResumed = false
 
     private val settingsLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -212,6 +251,20 @@ class MainActivity : AppCompatActivity() {
                 addAction(Intent.ACTION_SCREEN_ON)
                 addAction(Intent.ACTION_SCREEN_OFF)
             },
+        )
+        registerReceiver(
+            frameCommandReceiver,
+            IntentFilter(ScheduleWakeReceiver.ACTION_FRAME_COMMAND),
+        )
+        PreferenceManager.getDefaultSharedPreferences(applicationContext)
+            .registerOnSharedPreferenceChangeListener(prefsListener)
+        isFrameRunning = true
+        FrameLog.init(applicationContext)
+        val bootPrefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
+        FrameLog.i(
+            TAG,
+            "MainActivity created (activeTimes=${bootPrefs.getBoolean("activeTimes", false)}, " +
+                    "keepAlive=${bootPrefs.getBoolean("keepAlive", false)})"
         )
 
         val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
@@ -560,6 +613,7 @@ class MainActivity : AppCompatActivity() {
         if (activeTimes) {
             handler.removeCallbacks(activeCheckRunnable)
             handler.post(activeCheckRunnable)
+            ActiveScheduleManager.armWakeAlarm(this)
         } else {
             handler.removeCallbacks(activeCheckRunnable)
             if (isFrameInactive != false) {
@@ -831,14 +885,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkActiveTime() {
-        val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
-        val schedule = Helpers.parseActiveSchedule(prefs.getString("activeSchedule", null))
-        val shouldBeActive = Helpers.isActiveNow(schedule, Calendar.getInstance())
+        if (!ActiveScheduleManager.activeTimesEnabled(this)) return
+        val shouldBeActive = ActiveScheduleManager.shouldBeActiveNow(this)
 
         if (shouldBeActive && isFrameInactive != false) {
+            FrameLog.i(TAG, "Periodic check: active period -> waking the frame")
             setFrameActive(true)
         } else if (!shouldBeActive) {
             if (isFrameInactive != true) {
+                FrameLog.i(TAG, "Periodic check: inactive period -> sleeping the frame")
                 setFrameActive(false)
             } else {
                 // Already inactive: re-arm in case the schedule changed and the
@@ -848,7 +903,47 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Applies a schedule/Active Times change that happened while we are running. */
+    private fun applyScheduleFromPreferences() {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
+        val activeTimes = prefs.getBoolean("activeTimes", false)
+        FrameLog.i(TAG, "Schedule settings changed (activeTimes=$activeTimes)")
+
+        if (!activeTimes) {
+            handler.removeCallbacks(activeCheckRunnable)
+            ActiveScheduleManager.cancelWakeAlarm(this)
+            FrameKeepAliveService.stop(this)
+            isManualOverride = false
+            if (isActivityResumed && isFrameInactive != false) setFrameActive(true)
+            return
+        }
+
+        handler.removeCallbacks(activeCheckRunnable)
+        handler.post(activeCheckRunnable)
+        if (FrameKeepAliveService.isEnabledInSettings(this)) FrameKeepAliveService.start(this)
+
+        // While the user is on the settings screen the frame must not suddenly lock itself; only
+        // the alarm is kept up to date. The visible state is applied in onResume -> checkActiveTime.
+        val shouldBeActive = ActiveScheduleManager.shouldBeActiveNow(this)
+        if (!isActivityResumed) {
+            if (shouldBeActive) {
+                ActiveScheduleManager.cancelWakeAlarm(this)
+            } else {
+                ActiveScheduleManager.armWakeAlarm(this)
+            }
+            return
+        }
+
+        if (shouldBeActive) {
+            ActiveScheduleManager.cancelWakeAlarm(this)
+            if (isFrameInactive != false) setFrameActive(true)
+        } else {
+            if (isFrameInactive != true) setFrameActive(false) else ActiveScheduleManager.armWakeAlarm(this)
+        }
+    }
+
     private fun setFrameActive(active: Boolean) {
+        FrameLog.i(TAG, "setFrameActive($active)")
         if (active) {
             isFrameInactive = false
             cancelWakeAlarm()
@@ -916,6 +1011,7 @@ class MainActivity : AppCompatActivity() {
         // Manual power-button override: when the schedule has put the frame to sleep and the
         // user turns the screen on, temporarily show the frame without forcing it to stay on.
         if (isFrameInactive == true && !isManualOverride) {
+            FrameLog.i(TAG, "Screen turned on while the frame was asleep (manual override)")
             isManualOverride = true
             showFrameTemporarily()
         }
@@ -927,11 +1023,8 @@ class MainActivity : AppCompatActivity() {
         // Active Times or a new active period may have started while they were viewing.
         if (isManualOverride) {
             isManualOverride = false
-            val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
-            val activeTimes = prefs.getBoolean("activeTimes", false)
-            val schedule = Helpers.parseActiveSchedule(prefs.getString("activeSchedule", null))
-            val shouldBeActive =
-                !activeTimes || Helpers.isActiveNow(schedule, Calendar.getInstance())
+            FrameLog.i(TAG, "Manual override ended, re-evaluating the schedule")
+            val shouldBeActive = ActiveScheduleManager.shouldBeActiveNow(this)
             setFrameActive(shouldBeActive)
         }
     }
@@ -986,60 +1079,26 @@ class MainActivity : AppCompatActivity() {
         if (dpm.isAdminActive(FrameDeviceAdminReceiver.componentName(this))) {
             try {
                 dpm.lockNow()
+                FrameLog.i(TAG, "Screen locked (lockNow)")
             } catch (e: SecurityException) {
-                Log.w("MainActivity", "Unable to lock device: ${e.message}")
+                FrameLog.w(TAG, "Unable to lock the device: ${e.message}")
             }
         } else {
-            Log.i(
-                "MainActivity",
-                "Device admin not enabled; screen will only dim. Enable it in Settings to fully sleep.",
+            FrameLog.w(
+                TAG,
+                "Device admin not enabled; the screen will only dim. Enable 'Screen-Off Permission' in the settings."
             )
         }
     }
 
-    private fun wakeAlarmPendingIntent(): PendingIntent {
-        val intent = Intent(this, ScheduleWakeReceiver::class.java).apply {
-            action = ScheduleWakeReceiver.ACTION_WAKE
-        }
-        return PendingIntent.getBroadcast(
-            this,
-            ScheduleWakeReceiver.REQUEST_CODE,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-    }
-
     private fun scheduleWakeAlarm() {
-        val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
-        val schedule = Helpers.parseActiveSchedule(prefs.getString("activeSchedule", null))
-        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val pendingIntent = wakeAlarmPendingIntent()
-        // Always clear any previous alarm first so a stale wake time is dropped even when the
-        // schedule no longer has an upcoming active start.
-        alarmManager.cancel(pendingIntent)
-        val next = Helpers.nextActiveStart(schedule, Calendar.getInstance()) ?: return
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                // setExactAndAllowWhileIdle is available since API 23 and wakes from Doze
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    next.timeInMillis,
-                    pendingIntent,
-                )
-            } else {
-                // API 21/22 has no Doze mode to work around; setExact is sufficient.
-                alarmManager.setExact(AlarmManager.RTC_WAKEUP, next.timeInMillis, pendingIntent)
-            }
-        } catch (e: SecurityException) {
-            // Exact alarms not permitted (API 31+); fall back to an inexact wake (may fire a bit late)
-            alarmManager.set(AlarmManager.RTC_WAKEUP, next.timeInMillis, pendingIntent)
-            Log.w("MainActivity", "Exact alarm denied, using inexact wake: ${e.message}")
-        }
+        // Arming lives in ActiveScheduleManager so the boot receiver, the keep-alive service and
+        // the diagnostics screen all use the exact same alarm (setAlarmClock).
+        ActiveScheduleManager.armWakeAlarm(this)
     }
 
     private fun cancelWakeAlarm() {
-        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        alarmManager.cancel(wakeAlarmPendingIntent())
+        ActiveScheduleManager.cancelWakeAlarm(this)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -1051,6 +1110,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        isActivityResumed = true
         hideSystemUI()
         // Re-evaluate the schedule whenever the activity returns to the foreground. This is
         // essential when the wake alarm brings an already-running instance forward (which does
@@ -1068,10 +1128,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onPause() {
+        isActivityResumed = false
+        super.onPause()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        isFrameRunning = false
         rcpServer.stop()
-        unregisterReceiver(screenStateReceiver)
+        runCatching { unregisterReceiver(screenStateReceiver) }
+        runCatching { unregisterReceiver(frameCommandReceiver) }
+        runCatching {
+            PreferenceManager.getDefaultSharedPreferences(applicationContext)
+                .unregisterOnSharedPreferenceChangeListener(prefsListener)
+        }
+        FrameLog.i(TAG, "MainActivity destroyed")
         handler.removeCallbacksAndMessages(null)
     }
 

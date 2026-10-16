@@ -24,4 +24,32 @@
     <string name="client_cert_needs_import">Import a client certificate first.</string>
     <string name="client_cert_read_error">The stored client certificate could not be read. Please
         import it again.</string>
+
+    <string name="keepalive_channel_name">Frame keep-alive</string>
+    <string name="keepalive_channel_description">Keeps the frame awake during its active hours so
+        the scheduled sleep/wake keeps working on devices with aggressive power saving.</string>
+    <string name="keepalive_notification_title">ImmichFrame is active</string>
+    <string name="keepalive_notification_text">The frame keeps itself running during its active
+        hours (Active Times).</string>
+    <string name="keepalive_summary">Recommended on Huawei/EMUI and other devices that stop apps
+        when the screen turns off. Shows a small permanent notification and keeps the frame running
+        during its active hours.</string>
+    <string name="keepalive_started_toast">Keep-alive service started.</string>
+    <string name="diagnostics_summary">Check the schedule, the wake alarm and the device admin, test
+        sleep/wake on the spot and read the event log.</string>
+    <string name="schedule_next_sleep">Next sleep</string>
+    <string name="schedule_next_wake">Next wake-up</string>
+
+    <string name="diag_title">ImmichFrame Diagnostics</string>
+    <string name="diag_arm_minute">Arm wake test (+1 min)</string>
+    <string name="diag_test_now">Sleep now + wake in 30 s</string>
+    <string name="diag_recheck">Check now</string>
+    <string name="diag_clear_log">Clear log</string>
+    <string name="diag_active_times_toggle">Active Times enabled</string>
+    <string name="diag_share">Share report</string>
+    <string name="diag_close">Close</string>
+    <string name="diag_log_title">Event log</string>
+    <string name="diag_armed_toast">Wake test armed for %1$s</string>
+    <string name="diag_test_started">Sleeping now - the frame should come back in about 30 seconds
+        (watch the event log).</string>
 </resources>
