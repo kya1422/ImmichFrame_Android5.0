@@ -4,7 +4,12 @@ name: Android Build
 on:
   push:
     branches: [ "main" ]        # main に push したら自動ビルド
+    tags: [ "v*" ]              # タグを push したらビルドして GitHub Release に APK を添付
   workflow_dispatch:            # Actionsタブから手動実行も可能にする
+
+# Release の作成と APK の添付には書き込み権限が必要
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -35,3 +40,37 @@ jobs:
           name: ImmichFrame-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      # タグ (v*) の push 時のみ: GitHub Release を作成して debug APK を添付する
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > "$RUNNER_TEMP/release-notes.md" <<'EOF'
+          ## ImmichFrame Android ${{ github.ref_name }}
+
+          Cloudflare のクライアント証明書認証 (Mutual TLS) に対応したビルドです。
+          This build adds support for TLS client certificates (Cloudflare Access Mutual TLS).
+
+          ### 主な変更 / Changes
+          - 設定 → **Client Certificate (mTLS)** からクライアント証明書をインポート
+            (PKCS#12 `.p12`/`.pfx` または PEM の証明書 + 秘密鍵)
+          - WebView モード / ネイティブ画像モード / ホーム画面ウィジェットのすべてで証明書を提示
+          - 証明書は設定したサーバー URL のホストにのみ提示 (他のホストからの要求は拒否)
+
+          ### インストール / Install
+          1. 下記の `app-debug.apk` をダウンロード
+          2. 端末で「提供元不明のアプリ」からのインストールを許可してインストール
+             (debug ビルドのため debug キーで署名されています)
+
+          詳しい使い方は README の「🔐 Client certificate (Cloudflare mTLS)」を参照してください。
+          EOF
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" app/build/outputs/apk/debug/*.apk --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "ImmichFrame Android $GITHUB_REF_NAME" \
+              --notes-file "$RUNNER_TEMP/release-notes.md" \
+              app/build/outputs/apk/debug/*.apk
+          fi
