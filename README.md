@@ -58,6 +58,25 @@ In addition to enabling the keep-alive service:
 * The screensaver (Daydream) mode is started by Android itself, so the Active Times schedule
   cannot switch it on; it is closed when the frame is supposed to sleep.
 
+## 🔏 Release signing
+
+The APKs attached to the GitHub releases are signed with a **stable key** so that a new release
+installs over the previous one (an APK can only replace another one when the signature matches).
+
+The keystore lives outside the repository; the CI job reads it from repository secrets:
+
+| Secret | Content |
+| --- | --- |
+| `IMMICHFRAME_KEYSTORE_BASE64` | the keystore file, base64 encoded (`base64 -w0 keystore.jks`) |
+| `IMMICHFRAME_KEYSTORE_PASSWORD` | store password |
+| `IMMICHFRAME_KEY_ALIAS` | key alias |
+
+Without these secrets the build falls back to the runner's throwaway debug key (buildable, but such
+an APK cannot update an installed one). Locally, Android Studio keeps using the default debug key.
+
+> Keep a backup of the keystore and its password. If it is lost, published builds can only be
+> installed after uninstalling the app (which also deletes its settings).
+
 ## 🔐 Client certificate (Cloudflare mTLS)
 
 Servers that are protected by Cloudflare Access "Mutual TLS" (or any other proxy that asks for a

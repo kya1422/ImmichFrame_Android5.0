@@ -7,8 +7,28 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+// Stable signing key for the debug APKs that are published on GitHub. Installing an APK over an
+// existing one only works while the signature stays the same, so the published builds must not be
+// signed with the throwaway debug key that every CI runner generates. The keystore is provided
+// through the environment (GitHub Actions secrets), never committed:
+//   IMMICHFRAME_KEYSTORE_FILE, IMMICHFRAME_KEYSTORE_PASSWORD, IMMICHFRAME_KEY_ALIAS
+val sharedKeystorePath = System.getenv("IMMICHFRAME_KEYSTORE_FILE")
+val sharedKeystorePassword = System.getenv("IMMICHFRAME_KEYSTORE_PASSWORD")
+val sharedKeyAlias = System.getenv("IMMICHFRAME_KEY_ALIAS")
+val sharedKeyPassword = System.getenv("IMMICHFRAME_KEY_PASSWORD") ?: sharedKeystorePassword
+val useSharedSigning = !sharedKeystorePath.isNullOrBlank() && !sharedKeystorePassword.isNullOrBlank() &&
+        !sharedKeyAlias.isNullOrBlank() && file(sharedKeystorePath).exists()
+
 android {
     signingConfigs {
+        if (useSharedSigning) {
+            create("Shared") {
+                storeFile = file(sharedKeystorePath!!)
+                storePassword = sharedKeystorePassword
+                keyAlias = sharedKeyAlias
+                keyPassword = sharedKeyPassword
+            }
+        }
         create("Release") {
             val propertiesFile = rootProject.file("signing.properties")
             if (propertiesFile.exists()) {
@@ -31,11 +51,19 @@ android {
         applicationId = "com.immichframe.immichframe"
         minSdk = 21
         targetSdk = 36
-        versionCode = 52
-        versionName = "1.0.52.0"
+        versionCode = 53
+        versionName = "1.0.53.0"
     }
 
     buildTypes {
+        debug {
+            // Same key for every published build -> the next release installs over the previous one.
+            if (useSharedSigning) {
+                signingConfig = signingConfigs.getByName("Shared")
+            } else {
+                println("Warning: no stable signing key configured, using the default debug key!")
+            }
+        }
         release {
             isMinifyEnabled = true
             proguardFiles(

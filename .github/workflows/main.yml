@@ -15,6 +15,14 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    # Stable signing key (GitHub repository secrets). Without them the build falls back to the
+    # throwaway debug key of the runner - fine for testing, but such an APK cannot be installed
+    # over a previous release. See README "Release signing".
+    env:
+      IMMICHFRAME_KEYSTORE_BASE64: ${{ secrets.IMMICHFRAME_KEYSTORE_BASE64 }}
+      IMMICHFRAME_KEYSTORE_PASSWORD: ${{ secrets.IMMICHFRAME_KEYSTORE_PASSWORD }}
+      IMMICHFRAME_KEY_ALIAS: ${{ secrets.IMMICHFRAME_KEY_ALIAS }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,8 +38,26 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: Prepare the signing keystore
+        if: env.IMMICHFRAME_KEYSTORE_BASE64 != ''
+        run: |
+          mkdir -p "$RUNNER_TEMP/signing"
+          printf '%s' "$IMMICHFRAME_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/signing/immichframe.keystore"
+          echo "IMMICHFRAME_KEYSTORE_FILE=$RUNNER_TEMP/signing/immichframe.keystore" >> "$GITHUB_ENV"
+          echo "Keystore ready."
+
       - name: Build debug APK
         run: ./gradlew assembleDebug --stacktrace
+
+      - name: Show the signing certificate
+        run: |
+          APK=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          BUILD_TOOLS=$(ls -d "$ANDROID_SDK_ROOT"/build-tools/* 2>/dev/null | sort -V | tail -1)
+          if [ -n "$BUILD_TOOLS" ]; then
+            "$BUILD_TOOLS/apksigner" verify --print-certs "$APK"
+          else
+            echo "apksigner not found, skipping the certificate check"
+          fi
 
       # signing.properties が無い状態だと release ビルドは署名で失敗するため
       # まずは署名不要な debug APK をビルド・配布する構成にしています。
