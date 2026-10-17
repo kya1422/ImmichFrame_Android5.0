@@ -99,22 +99,25 @@ object ActiveScheduleManager {
             return null
         }
         val time = next.at.timeInMillis
-        prefs(context).edit().putLong(PREF_ARMED_AT, time).apply()
+        fun record() = prefs(context).edit().putLong(PREF_ARMED_AT, time).apply()
         return try {
             alarmManager.setAlarmClock(
                 AlarmManager.AlarmClockInfo(time, showPendingIntent(context)),
                 pendingIntent,
             )
+            record()
             FrameLog.i(TAG, "Wake alarm armed for ${format(time)}")
             time
         } catch (e: Exception) {
             FrameLog.w(TAG, "setAlarmClock() rejected (${e.message}); falling back to setExact()")
             try {
                 alarmManager.setExact(AlarmManager.RTC_WAKEUP, time, pendingIntent)
+                record()
                 FrameLog.i(TAG, "Wake alarm armed for ${format(time)} (setExact)")
                 time
             } catch (e2: Exception) {
                 alarmManager.set(AlarmManager.RTC_WAKEUP, time, pendingIntent)
+                record()
                 FrameLog.w(TAG, "Wake alarm armed for ${format(time)} (inexact): ${e2.message}")
                 time
             }

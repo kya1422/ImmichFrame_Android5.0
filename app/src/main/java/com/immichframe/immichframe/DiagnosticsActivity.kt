@@ -14,6 +14,7 @@ import android.widget.Button
 import android.widget.CheckBox
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 import androidx.preference.PreferenceManager
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -128,12 +129,12 @@ class DiagnosticsActivity : Activity() {
      * temporarily kept awake so a sleeping device cannot hide a broken alarm.
      */
     private fun runWakeTest() {
-        val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
-        prefs.edit().putBoolean("activeTimes", true).apply()
-
+        // Note: the user's settings are not modified. Sleeping and waking both use the explicit
+        // command path, so the test works with Active Times on or off.
         FrameLog.i("diag", "Wake test started: sleeping now, waking in 30 s")
         try {
-            startService(
+            ContextCompat.startForegroundService(
+                this,
                 Intent(this, FrameKeepAliveService::class.java)
                     .putExtra(FrameKeepAliveService.EXTRA_TEST, true)
             )

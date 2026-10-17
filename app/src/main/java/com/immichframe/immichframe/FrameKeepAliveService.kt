@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import androidx.core.content.ContextCompat
 
 /**
  * Optional foreground service that keeps the frame process alive and re-evaluates the Active
@@ -42,7 +43,13 @@ class FrameKeepAliveService : Service() {
 
         fun start(context: Context) {
             try {
-                context.startService(Intent(context, FrameKeepAliveService::class.java))
+                // Android 8+ forbids starting a background service, and this one is also started
+                // from BOOT_COMPLETED. startForegroundService() is the supported way; the service
+                // calls startForeground() in onCreate() within the 5 s window.
+                ContextCompat.startForegroundService(
+                    context,
+                    Intent(context, FrameKeepAliveService::class.java),
+                )
             } catch (e: Exception) {
                 FrameLog.w(TAG, "Could not start the keep-alive service: ${e.message}")
             }
@@ -65,6 +72,9 @@ class FrameKeepAliveService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastHeartbeat = 0L
+
+    /** Previous schedule state, used to notice the transition into the sleep window. */
+    private var lastShouldBeActive: Boolean? = null
     private var testUntil = 0L
     private var stopping = false
 
@@ -83,7 +93,7 @@ class FrameKeepAliveService : Service() {
         FrameLog.init(applicationContext)
         createChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
-        setWakeLockHeld(true)
+        // The wake lock is taken by evaluate() only while the frame is supposed to be on.
         handler.post(watchdog)
         FrameLog.i(TAG, "Keep-alive started (SDK ${Build.VERSION.SDK_INT})")
     }
@@ -118,16 +128,24 @@ class FrameKeepAliveService : Service() {
             return
         }
 
-        if (!ActiveScheduleManager.activeTimesEnabled(this) || inTest) {
-            // No schedule: the frame is always on and the activity keeps the screen awake.
+        if (!ActiveScheduleManager.activeTimesEnabled(this)) {
+            if (!inTest) {
+                // Nothing to keep alive: with Active Times off the frame is always on and the
+                // activity itself keeps the screen awake. Staying here would hold a wake lock
+                // forever and drain the battery.
+                FrameLog.i(TAG, "Active Times disabled, stopping the keep-alive service")
+                stopSelf()
+                return
+            }
             ActiveScheduleManager.cancelWakeAlarm(this)
             setWakeLockHeld(true)
-            if (inTest) FrameLog.i(TAG, "Test mode active, ignoring the schedule")
+            FrameLog.i(TAG, "Test mode active, ignoring the schedule")
             maybeHeartbeat(now)
             return
         }
 
-        if (ActiveScheduleManager.shouldBeActiveNow(this)) {
+        val shouldBeActiveNow = ActiveScheduleManager.shouldBeActiveNow(this)
+        if (shouldBeActiveNow) {
             // Active hours: hold the CPU awake so the frame keeps rendering and the periodic
             // check in MainActivity keeps running.
             setWakeLockHeld(true)
@@ -148,6 +166,17 @@ class FrameKeepAliveService : Service() {
                 ActiveScheduleManager.armWakeAlarm(this)
             }
         }
+
+        // If the active period just ended, make sure the screen goes off even when MainActivity
+        // was killed by the system and its own 30 second check is not running any more.
+        if (lastShouldBeActive == true && !shouldBeActiveNow) {
+            FrameLog.i(TAG, "Active period ended -> asking the frame to sleep")
+            sendBroadcast(
+                Intent(ScheduleWakeReceiver.ACTION_FRAME_COMMAND)
+                    .putExtra(ScheduleWakeReceiver.EXTRA_FRAME_ACTIVE, false)
+            )
+        }
+        lastShouldBeActive = shouldBeActiveNow
 
         maybeHeartbeat(now)
     }

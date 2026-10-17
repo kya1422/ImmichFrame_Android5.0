@@ -18,6 +18,7 @@
         android:required="false" />
 
     <application
+        android:name=".ImmichFrameApp"
         android:largeHeap="true"
         android:banner="@mipmap/immich_banner"
         android:icon="@mipmap/immich_frame"
@@ -112,11 +113,13 @@
             </intent-filter>
         </receiver>
 
-        <!-- Re-arms the wake alarm (and the keep-alive service) after a reboot -->
+        <!-- Re-arms the wake alarm (and the keep-alive service) after a reboot.
+             BOOT_COMPLETED is a protected broadcast sent by the system, so the receiver has to be
+             exported: a non-exported receiver only receives broadcasts sent by this app. -->
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
-            android:exported="false">
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />

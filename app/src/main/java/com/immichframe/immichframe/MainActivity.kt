@@ -3,9 +3,7 @@ package com.immichframe.immichframe
 import android.animation.ObjectAnimator
 import android.animation.PropertyValuesHolder
 import android.annotation.SuppressLint
-import android.app.AlarmManager
 import android.app.KeyguardManager
-import android.app.PendingIntent
 import android.app.admin.DevicePolicyManager
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -112,7 +110,11 @@ class MainActivity : AppCompatActivity() {
     private val activeCheckRunnable = object : Runnable {
         override fun run() {
             checkActiveTime()
-            handler.postDelayed(this, 30000)
+            // Do not keep waking up every 30 s once the feature is switched off; a stale loop
+            // would prevent the device from ever sleeping.
+            if (ActiveScheduleManager.activeTimesEnabled(this@MainActivity)) {
+                handler.postDelayed(this, 30000)
+            }
         }
     }
     private var isFrameInactive: Boolean? = null
