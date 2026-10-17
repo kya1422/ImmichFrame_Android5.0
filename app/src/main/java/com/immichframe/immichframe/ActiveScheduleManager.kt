@@ -27,6 +27,7 @@ object ActiveScheduleManager {
     private const val TAG = "schedule"
     private const val REQUEST_CODE = 4711
     private const val TEST_REQUEST_CODE = 4712
+    private const val PREF_ARMED_AT = "wakeAlarmArmedAt"
 
     private fun prefs(context: Context) =
         PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
@@ -82,8 +83,14 @@ object ActiveScheduleManager {
         // Always drop the previous alarm first so a stale wake time cannot fire.
         alarmManager.cancel(pendingIntent)
 
-        if (!activeTimesEnabled(context)) return null
-        if (shouldBeActiveNow(context)) return null
+        if (!activeTimesEnabled(context)) {
+            prefs(context).edit().remove(PREF_ARMED_AT).apply()
+            return null
+        }
+        if (shouldBeActiveNow(context)) {
+            prefs(context).edit().remove(PREF_ARMED_AT).apply()
+            return null
+        }
 
         val next = nextTransition(context) ?: return null
         if (next.becomesActive.not()) {
@@ -92,6 +99,7 @@ object ActiveScheduleManager {
             return null
         }
         val time = next.at.timeInMillis
+        prefs(context).edit().putLong(PREF_ARMED_AT, time).apply()
         return try {
             alarmManager.setAlarmClock(
                 AlarmManager.AlarmClockInfo(time, showPendingIntent(context)),
@@ -116,8 +124,17 @@ object ActiveScheduleManager {
     fun cancelWakeAlarm(context: Context) {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         alarmManager.cancel(wakePendingIntent(context))
+        prefs(context).edit().remove(PREF_ARMED_AT).apply()
         FrameLog.i(TAG, "Wake alarm cancelled")
     }
+
+    /**
+     * Trigger time of the alarm *we* armed, or null when there is none. This is what the
+     * diagnostics screen shows - [pendingAlarm] reports whatever alarm the whole device has next,
+     * which may belong to another app (clock, calendar, ...).
+     */
+    fun armedAt(context: Context): Long? =
+        prefs(context).getLong(PREF_ARMED_AT, 0L).takeIf { it > 0L }
 
     /**
      * Arms a one-shot alarm that force-activates the frame regardless of the schedule. Used by the

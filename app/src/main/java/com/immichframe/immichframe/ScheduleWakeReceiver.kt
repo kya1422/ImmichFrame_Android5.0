@@ -3,12 +3,17 @@ package com.immichframe.immichframe
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.PowerManager
 
 /**
- * Fired by AlarmManager at the next scheduled active-start time. Wakes the device by bringing
- * MainActivity to the foreground; MainActivity then re-evaluates the schedule and powers the
- * screen back on. Needed because the device may be in deep sleep, where the in-app Handler loop
- * is suspended.
+ * Fired by AlarmManager at the next scheduled active-start time. Wakes the device and brings
+ * MainActivity to the foreground; MainActivity then re-evaluates the schedule, turns the screen
+ * on and re-acquires FLAG_KEEP_SCREEN_ON. Needed because the device may be in deep sleep, where
+ * the in-app Handler loop is suspended.
+ *
+ * A wake-up alarm alone only wakes the CPU: `startActivity()` does not turn the panel back on
+ * while the device is asleep, so the display has to be woken explicitly first. This is the same
+ * reason why an alarm clock app cannot rely on launching an activity.
  *
  * It also serves as the target of the Diagnostics screen self-test:
  *  - [EXTRA_FORCE_WAKE]  -> wake the frame regardless of the schedule
@@ -27,6 +32,7 @@ class ScheduleWakeReceiver : BroadcastReceiver() {
 
             intent?.getBooleanExtra(EXTRA_FORCE_WAKE, false) == true -> {
                 FrameLog.i("wake", "Test wake requested")
+                wakeDisplay(context)
                 context.sendBroadcast(
                     Intent(ACTION_FRAME_COMMAND).putExtra(EXTRA_FRAME_ACTIVE, true)
                 )
@@ -35,8 +41,31 @@ class ScheduleWakeReceiver : BroadcastReceiver() {
 
             else -> {
                 FrameLog.i("wake", "Wake alarm delivered")
+                wakeDisplay(context)
                 launchMainActivity(context)
             }
+        }
+    }
+
+    /**
+     * Turns the panel on before the activity is launched. Without this the launch only wakes the
+     * CPU and the screen stays dark until the user touches the device.
+     */
+    private fun wakeDisplay(context: Context) {
+        try {
+            val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            @Suppress("DEPRECATION")
+            val wakeLock = powerManager.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK
+                        or PowerManager.ACQUIRE_CAUSES_WAKEUP
+                        or PowerManager.ON_AFTER_RELEASE,
+                "immichframe:alarmWake",
+            )
+            // Released automatically after 10 s; MainActivity keeps the screen on afterwards.
+            wakeLock.acquire(10_000L)
+            FrameLog.i("wake", "Display woken up")
+        } catch (e: Exception) {
+            FrameLog.w("wake", "Could not wake the display: ${e.message}")
         }
     }
 

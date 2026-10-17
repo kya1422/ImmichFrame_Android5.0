@@ -142,8 +142,11 @@ class DiagnosticsActivity : Activity() {
         }
         ActiveScheduleManager.armTestAlarm(this, 30_000L)
 
+        // Explicit intent: implicit broadcasts no longer reach manifest receivers on Android 8+,
+        // so the previous version silently did nothing on newer devices.
         sendBroadcast(
-            Intent(ScheduleWakeReceiver.ACTION_WAKE).apply {
+            Intent(this, ScheduleWakeReceiver::class.java).apply {
+                action = ScheduleWakeReceiver.ACTION_WAKE
                 putExtra(ScheduleWakeReceiver.EXTRA_FORCE_SLEEP, true)
             }
         )
@@ -212,9 +215,13 @@ class DiagnosticsActivity : Activity() {
                 .append("  in ").append(minutesUntil(next.at.timeInMillis)).append("\n")
         }
 
-        builder.append("Armed wake alarm: ")
-            .append(pendingAlarm?.let { ActiveScheduleManager.format(it) } ?: "none (see log)")
+        val armedAt = ActiveScheduleManager.armedAt(context)
+        builder.append("Armed wake alarm (ours): ")
+            .append(armedAt?.let { ActiveScheduleManager.format(it) } ?: "none")
             .append("\n")
+        builder.append("System next alarm clock: ")
+            .append(pendingAlarm?.let { ActiveScheduleManager.format(it) } ?: "none")
+            .append("   (may belong to another app)\n")
 
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         val component = FrameDeviceAdminReceiver.componentName(this)

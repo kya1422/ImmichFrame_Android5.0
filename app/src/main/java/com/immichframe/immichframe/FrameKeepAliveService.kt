@@ -24,7 +24,10 @@ import android.os.PowerManager
  * re-arms the alarm if the system ever drops it, plus wakes the activity itself if the alarm
  * turns out not to be delivered on that device.
  *
- * The service stops itself outside of the configured active hours so the device can sleep.
+ * Behaviour: while the frame is supposed to be on it holds a partial wake lock and only starts
+ * MainActivity when it is not running; outside the active hours it releases the wake lock (so the
+ * device can sleep) and just keeps the wake-up alarm armed. It stops itself when the feature is
+ * disabled or Active Times is turned off.
  */
 class FrameKeepAliveService : Service() {
     companion object {
@@ -32,9 +35,7 @@ class FrameKeepAliveService : Service() {
         private const val CHANNEL_ID = "immichframe_keepalive"
         private const val NOTIFICATION_ID = 4711
         private const val CHECK_INTERVAL_MS = 60_000L
-        private const val WAKE_GRACE_MS = 90_000L
         private const val HEARTBEAT_INTERVAL_MS = 10 * 60_000L
-        private const val DUPLICATE_WAKE_GUARD_MS = 60_000L
 
         const val EXTRA_TEST = "extra_test"
         const val TEST_DURATION_MS = 3 * 60_000L
@@ -82,7 +83,7 @@ class FrameKeepAliveService : Service() {
         FrameLog.init(applicationContext)
         createChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
-        acquireWakeLock()
+        setWakeLockHeld(true)
         handler.post(watchdog)
         FrameLog.i(TAG, "Keep-alive started (SDK ${Build.VERSION.SDK_INT})")
     }
@@ -117,40 +118,33 @@ class FrameKeepAliveService : Service() {
             return
         }
 
-        val activeTimes = ActiveScheduleManager.activeTimesEnabled(this)
-
-        if (!activeTimes || inTest) {
+        if (!ActiveScheduleManager.activeTimesEnabled(this) || inTest) {
+            // No schedule: the frame is always on and the activity keeps the screen awake.
             ActiveScheduleManager.cancelWakeAlarm(this)
+            setWakeLockHeld(true)
             if (inTest) FrameLog.i(TAG, "Test mode active, ignoring the schedule")
             maybeHeartbeat(now)
             return
         }
 
-        val shouldBeActive = ActiveScheduleManager.shouldBeActiveNow(this)
-        val pending = ActiveScheduleManager.pendingAlarm(this)
-
-        if (shouldBeActive) {
-            if (pending == null || pending < now) {
-                // Still inside the active period: make sure the screen is on. This covers devices
-                // where the wake alarm never arrives, and the case where the device booted during
-                // the active hours before the user unlocked it.
-                FrameLog.i(
-                    TAG,
-                    "Active period, no pending alarm -> waking the frame" +
-                            (if (pending != null) " (stale alarm ${ActiveScheduleManager.format(pending)})" else "")
-                )
-                wakeFrame()
-            } else if (pending - now < WAKE_GRACE_MS) {
-                FrameLog.w(
-                    TAG,
-                    "Alarm was due/close (${ActiveScheduleManager.format(pending)}) but the frame is still asleep"
-                )
+        if (ActiveScheduleManager.shouldBeActiveNow(this)) {
+            // Active hours: hold the CPU awake so the frame keeps rendering and the periodic
+            // check in MainActivity keeps running.
+            setWakeLockHeld(true)
+            // Only start the activity when it is actually gone. (This used to launch it every
+            // minute, because "no pending alarm" is the normal state while the frame is active -
+            // which pulled the user out of the settings and diagnostics screens.)
+            if (!MainActivity.isFrameRunning) {
+                FrameLog.i(TAG, "Active period but the frame is not running -> starting it")
                 wakeFrame()
             }
         } else {
-            // Inactive period: the process has to stay alive for the wake-up alarm, which is
-            // exactly what EMUI likes to destroy. Re-arm it when it is missing.
-            if (pending == null || pending < now) {
+            // Sleep window: the process has to stay alive for the wake-up alarm (exactly what
+            // EMUI likes to destroy), but the CPU may sleep again. So the wake lock is released
+            // and only the alarm is kept armed.
+            setWakeLockHeld(false)
+            val armedAt = ActiveScheduleManager.armedAt(this)
+            if (armedAt == null || armedAt < now) {
                 ActiveScheduleManager.armWakeAlarm(this)
             }
         }
@@ -206,7 +200,7 @@ class FrameKeepAliveService : Service() {
             Notification.Builder(this, CHANNEL_ID)
                 .setContentTitle(getString(R.string.keepalive_notification_title))
                 .setContentText(getString(R.string.keepalive_notification_text))
-                .setSmallIcon(R.mipmap.immich_frame)
+                .setSmallIcon(R.drawable.ic_stat_immichframe)
                 .setContentIntent(contentIntent)
                 .setOngoing(true)
                 .build()
@@ -215,23 +209,37 @@ class FrameKeepAliveService : Service() {
             Notification.Builder(this)
                 .setContentTitle(getString(R.string.keepalive_notification_title))
                 .setContentText(getString(R.string.keepalive_notification_text))
-                .setSmallIcon(R.mipmap.immich_frame)
+                .setSmallIcon(R.drawable.ic_stat_immichframe)
                 .setContentIntent(contentIntent)
                 .setOngoing(true)
                 .build()
         }
     }
 
-    private fun acquireWakeLock() {
+    /**
+     * Holds/releases the partial wake lock. It is only held while the frame is supposed to be on
+     * (and during the diagnostics self-test); outside the active hours the device must be able to
+     * sleep, otherwise the battery is drained all night. The service itself stays in the
+     * foreground either way, so vendor task killers still leave the process alone.
+     */
+    private fun setWakeLockHeld(hold: Boolean) {
         try {
-            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-            @Suppress("DEPRECATION")
-            wakeLock = powerManager.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
-                "immichframe:keepalive",
-            ).apply { acquire() }
+            if (hold) {
+                if (wakeLock?.isHeld != true) {
+                    val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                    wakeLock = powerManager.newWakeLock(
+                        PowerManager.PARTIAL_WAKE_LOCK,
+                        "immichframe:keepalive",
+                    ).apply { acquire() }
+                    FrameLog.i(TAG, "Wake lock acquired")
+                }
+            } else if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+                wakeLock = null
+                FrameLog.i(TAG, "Wake lock released (outside the active hours)")
+            }
         } catch (e: Exception) {
-            FrameLog.w(TAG, "Could not acquire the wake lock: ${e.message}")
+            FrameLog.w(TAG, "Could not update the wake lock: ${e.message}")
         }
     }
 

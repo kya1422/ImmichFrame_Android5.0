@@ -53,6 +53,7 @@ import java.util.Calendar
 import java.util.Locale
 import kotlinx.coroutines.*
 import androidx.lifecycle.lifecycleScope
+import androidx.core.content.ContextCompat
 import androidx.core.graphics.toColorInt
 import androidx.core.graphics.drawable.toDrawable
 import androidx.core.net.toUri
@@ -245,16 +246,22 @@ class MainActivity : AppCompatActivity() {
         )
         rcpServer.start()
 
-        registerReceiver(
+        // ContextCompat.registerReceiver is required: apps targeting Android 14+ must pass
+        // RECEIVER_NOT_EXPORTED/RECEIVER_EXPORTED, otherwise registration throws.
+        ContextCompat.registerReceiver(
+            this,
             screenStateReceiver,
             IntentFilter().apply {
                 addAction(Intent.ACTION_SCREEN_ON)
                 addAction(Intent.ACTION_SCREEN_OFF)
             },
+            ContextCompat.RECEIVER_NOT_EXPORTED,
         )
-        registerReceiver(
+        ContextCompat.registerReceiver(
+            this,
             frameCommandReceiver,
             IntentFilter(ScheduleWakeReceiver.ACTION_FRAME_COMMAND),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
         )
         PreferenceManager.getDefaultSharedPreferences(applicationContext)
             .registerOnSharedPreferenceChangeListener(prefsListener)
@@ -1106,6 +1113,24 @@ class MainActivity : AppCompatActivity() {
         if (hasFocus) {
             hideSystemUI()
         }
+    }
+
+    /**
+     * The wake alarm launches us with FLAG_ACTIVITY_SINGLE_TOP: when the frame is already the
+     * resumed activity, only onNewIntent() is called (onResume() is not), so the schedule has to
+     * be applied here as well - otherwise the alarm would be swallowed with the screen still off.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        FrameLog.i(TAG, "onNewIntent -> re-evaluating the schedule")
+        if (intent.hasExtra(ScheduleWakeReceiver.EXTRA_FRAME_ACTIVE)) {
+            val frameActive = intent.getBooleanExtra(ScheduleWakeReceiver.EXTRA_FRAME_ACTIVE, true)
+            isManualOverride = false
+            setFrameActive(frameActive)
+            return
+        }
+        handler.post { checkActiveTime() }
     }
 
     override fun onResume() {

@@ -81,8 +81,8 @@ jobs:
           {
             echo "## ImmichFrame Android $GITHUB_REF_NAME"
             echo
-            echo "端末用 APK は下の Assets からダウンロードしてください（debug ビルド / debug キーで署名）。"
-            echo "Download the APK from the Assets section below (debug build, debug key)."
+            echo "端末用 APK は下の Assets からダウンロードしてください（debug ビルド / 固定の署名鍵で署名済み）。"
+            echo "Download the APK from the Assets section below (debug build, signed with the release key)."
             echo
             if [ -n "$previous_tag" ]; then
               echo "### このリリースの変更 / Changes since $previous_tag"

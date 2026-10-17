@@ -43,6 +43,7 @@ import retrofit2.Retrofit
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
+import androidx.core.content.ContextCompat
 import androidx.core.graphics.toColorInt
 import androidx.core.graphics.drawable.toDrawable
 import androidx.core.net.toUri
@@ -122,9 +123,12 @@ class ScreenSaverService : DreamService() {
             true
         }
 
-        registerReceiver(
+        // Required for apps targeting Android 14+: runtime receivers need an export flag.
+        ContextCompat.registerReceiver(
+            this,
             frameCommandReceiver,
             IntentFilter(ScheduleWakeReceiver.ACTION_FRAME_COMMAND),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
         )
         FrameLog.init(applicationContext)
         FrameLog.i("screensaver", "Screensaver (Daydream) started")

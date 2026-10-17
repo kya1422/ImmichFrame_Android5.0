@@ -30,9 +30,10 @@ What the app does to make that reliable:
 * **Wake-up alarm via `setAlarmClock()`**: the most reliable mechanism on every Android version,
   visible to the system (and to the Diagnostics screen). Falls back to `setExact()`/`set()`.
 * **Keep-Alive Service** (Settings → Reliability): optional foreground service for devices that
-  kill backgrounded apps (Huawei/EMUI, Xiaomi/MIUI, ...). It shows a permanent notification,
-  re-arms the wake alarm if the system drops it, re-checks the schedule every minute and stops
-  itself outside the active hours.
+  kill backgrounded apps (Huawei/EMUI, Xiaomi/MIUI, ...). It shows a permanent notification and
+  re-checks the schedule every minute. During the active hours it holds a partial wake lock so the
+  frame keeps rendering; outside them it **releases the wake lock** (the device may sleep) and only
+  keeps the wake-up alarm armed, so it does not drain the battery overnight.
 * **Boot receiver**: re-arms the alarm and restarts the keep-alive service after a reboot.
 * **Auto-save** in the schedule editor: leaving the editor with the back button no longer throws
   the draft away.
