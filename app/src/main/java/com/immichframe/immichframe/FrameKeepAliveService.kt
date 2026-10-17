@@ -93,9 +93,11 @@ class FrameKeepAliveService : Service() {
         FrameLog.init(applicationContext)
         createChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
-        // The wake lock is taken by evaluate() only while the frame is supposed to be on.
-        handler.post(watchdog)
         FrameLog.i(TAG, "Keep-alive started (SDK ${Build.VERSION.SDK_INT})")
+        // The wake lock is taken by evaluate() only while the frame is supposed to be on.
+        // The watchdog is started from onStartCommand(): the first evaluate() must already know
+        // about EXTRA_TEST, otherwise a test start with the feature disabled (and Active Times
+        // off) would hit the "nothing to keep alive" branch and stop the service instantly.
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -103,6 +105,8 @@ class FrameKeepAliveService : Service() {
             testUntil = System.currentTimeMillis() + TEST_DURATION_MS
             FrameLog.i(TAG, "Diagnostics test mode: staying awake for 3 minutes")
         }
+        handler.removeCallbacks(watchdog)
+        handler.post(watchdog)
         return START_STICKY
     }
 

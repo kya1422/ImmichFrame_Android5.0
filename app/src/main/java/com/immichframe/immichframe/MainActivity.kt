@@ -894,7 +894,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkActiveTime() {
-        if (!ActiveScheduleManager.activeTimesEnabled(this)) return
+        if (!ActiveScheduleManager.activeTimesEnabled(this)) {
+            // Feature off: the frame belongs on. This also undoes a manual/forced sleep (the
+            // diagnostics self-test or an RPC command), which otherwise left the frame dark
+            // until the activity was recreated.
+            if (isFrameInactive == true) setFrameActive(true)
+            return
+        }
         val shouldBeActive = ActiveScheduleManager.shouldBeActiveNow(this)
 
         if (shouldBeActive && isFrameInactive != false) {

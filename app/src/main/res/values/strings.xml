@@ -35,6 +35,8 @@
         when the screen turns off. Shows a small permanent notification and keeps the frame running
         during its active hours.</string>
     <string name="keepalive_started_toast">Keep-alive service started.</string>
+    <string name="keepalive_needs_active_times">Keep-alive only runs while Active Times is enabled.
+        It starts automatically once you enable Active Times.</string>
     <string name="diagnostics_summary">Check the schedule, the wake alarm and the device admin, test
         sleep/wake on the spot and read the event log.</string>
     <string name="schedule_next_sleep">Next sleep</string>

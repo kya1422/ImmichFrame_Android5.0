@@ -118,9 +118,21 @@ class SettingsFragment : PreferenceFragmentCompat() {
         chkKeepAlive?.setOnPreferenceChangeListener { _, newValue ->
             val enabled = newValue as Boolean
             if (enabled) {
-                FrameKeepAliveService.start(requireContext())
-                Toast.makeText(requireContext(), R.string.keepalive_started_toast, Toast.LENGTH_LONG)
-                    .show()
+                val activeTimes = PreferenceManager.getDefaultSharedPreferences(requireContext())
+                    .getBoolean("activeTimes", false)
+                if (!activeTimes) {
+                    // Without a schedule there is nothing to keep alive and the service stops
+                    // itself again, which would look like a bug without this hint.
+                    Toast.makeText(
+                        requireContext(),
+                        R.string.keepalive_needs_active_times,
+                        Toast.LENGTH_LONG,
+                    ).show()
+                } else {
+                    FrameKeepAliveService.start(requireContext())
+                    Toast.makeText(requireContext(), R.string.keepalive_started_toast, Toast.LENGTH_LONG)
+                        .show()
+                }
             } else {
                 FrameKeepAliveService.stop(requireContext())
             }

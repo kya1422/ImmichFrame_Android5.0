@@ -66,9 +66,13 @@ class DiagnosticsActivity : Activity() {
                 .edit().putBoolean("activeTimes", checked).apply()
             FrameLog.i("diag", "Active Times set to $checked from the diagnostics screen")
             if (checked) {
+                if (FrameKeepAliveService.isEnabledInSettings(applicationContext)) {
+                    FrameKeepAliveService.start(applicationContext)
+                }
                 ActiveScheduleManager.armWakeAlarm(applicationContext)
             } else {
                 ActiveScheduleManager.cancelWakeAlarm(applicationContext)
+                FrameKeepAliveService.stop(applicationContext)
             }
             refresh()
         }

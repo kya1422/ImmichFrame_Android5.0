@@ -13,7 +13,8 @@ import java.util.Locale
  * A photo frame usually runs without a PC attached, so "please send me the logcat" is not an
  * option when something goes wrong. This log records the events that matter for the Active Times
  * feature (schedule checks, screen off/on, alarms, boots, heartbeats) and is displayed by the
- * Diagnostics screen. Gaps between the keep-alive heartbeats show when the OS killed the app.
+ * Diagnostics screen. A gap between keep-alive heartbeats inside the active hours means the OS
+ * killed the app; outside them the CPU is allowed to sleep, so gaps there are normal.
  */
 object FrameLog {
     private const val LOG_TAG = "ImmichFrame"
