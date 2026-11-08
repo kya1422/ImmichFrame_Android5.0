@@ -54,4 +54,34 @@
     <string name="diag_armed_toast">Wake test armed for %1$s</string>
     <string name="diag_test_started">Sleeping now - the frame should come back in about 30 seconds
         (watch the event log).</string>
+
+    <!-- In-app update -->
+    <string name="update_category">App Update</string>
+    <string name="update_check_title">Check for updates</string>
+    <string name="update_installed_version">Installed: %1$s</string>
+    <string name="update_check_auto_title">Check automatically</string>
+    <string name="update_check_auto_summary">Look for a new release once a day and show a notification</string>
+    <string name="update_checking">Checking…</string>
+    <string name="update_up_to_date">You are on the latest version (%1$s)</string>
+    <string name="update_available_dialog_title">Update to %1$s</string>
+    <string name="update_now">Update now</string>
+    <string name="update_later">Later</string>
+    <string name="update_download_started">Downloading in the background. You will be asked to install when it finishes.</string>
+    <string name="update_downloading">Downloading…</string>
+    <string name="update_failed_title">Update failed</string>
+    <string name="update_failed_generic">The download did not finish. Please try again later.</string>
+    <string name="update_failed_reason">The download did not finish (reason code %1$d). Please try again later.</string>
+    <string name="update_ready_title">Ready to install</string>
+    <string name="update_ready_text">Tap to install ImmichFrame %1$s</string>
+    <string name="update_available_title">ImmichFrame %1$s is available</string>
+    <string name="update_available_text">Tap to see the release notes and update.</string>
+    <string name="update_channel_name">App updates</string>
+    <string name="update_channel_description">Notifies about new ImmichFrame releases</string>
+    <string name="update_install_dialog_title">Allow installing updates</string>
+    <string name="update_install_dialog_text">Android needs your permission once so that ImmichFrame can install its own updates. Enable "Allow from this source" on the next screen and press back.</string>
+    <string name="update_open_settings">Open settings</string>
+    <string name="update_verified_failed">The downloaded file was rejected: %1$s</string>
+    <string name="update_install_now">Install</string>
+    <string name="update_offline">No network connection</string>
+    <string name="update_no_apk_in_release">The latest release has no APK attached</string>
 </resources>

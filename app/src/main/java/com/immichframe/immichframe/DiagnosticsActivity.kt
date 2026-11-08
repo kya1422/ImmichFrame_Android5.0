@@ -191,6 +191,17 @@ class DiagnosticsActivity : Activity() {
         suppressCheckBoxCallback = false
 
         val builder = StringBuilder()
+        builder.append("App version: ").append(UpdateChecker.currentVersion(context))
+        val newest = UpdateChecker.latestKnownRelease(context)
+        if (newest != null && UpdateChecker.isNewer(newest.version, UpdateChecker.currentVersion(context))) {
+            builder.append("   (update available: ").append(newest.version).append(")")
+        }
+        builder.append("\n")
+        val lastCheck = UpdateChecker.lastCheck(context)
+        builder.append("Update check: ").append(
+            if (lastCheck > 0) timeFormat.format(Date(lastCheck)) else "never"
+        ).append(if (UpdateChecker.autoCheckEnabled(context)) "  (automatic)" else "  (manual only)")
+            .append("\n")
         builder.append("Now: ").append(ActiveScheduleManager.format(now.timeInMillis))
             .append("   (screen updates at ").append(timeFormat.format(Date())).append(")\n")
         builder.append("Active Times: ").append(if (activeTimes) "ENABLED" else "DISABLED")

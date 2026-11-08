@@ -211,6 +211,9 @@ class MainActivity : AppCompatActivity() {
         dimOverlay = findViewById(R.id.dimOverlay)
         swipeRefreshLayout = findViewById(R.id.swipeRefreshLayout)
 
+        // An update notification (or the install prompt for a finished download) brings us here.
+        handleUpdateIntent(intent)
+
         val swipeRefreshLayout = findViewById<SwipeRefreshLayout>(R.id.swipeRefreshLayout)
         swipeRefreshLayout.setOnRefreshListener {
             swipeRefreshLayout.isRefreshing = false
@@ -1132,6 +1135,7 @@ class MainActivity : AppCompatActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         FrameLog.i(TAG, "onNewIntent -> re-evaluating the schedule")
+        handleUpdateIntent(intent)
         if (intent.hasExtra(ScheduleWakeReceiver.EXTRA_FRAME_ACTIVE)) {
             val frameActive = intent.getBooleanExtra(ScheduleWakeReceiver.EXTRA_FRAME_ACTIVE, true)
             isManualOverride = false
@@ -1145,6 +1149,8 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         isActivityResumed = true
         hideSystemUI()
+        // Look for a new release at most once a day (no-op while offline or when disabled).
+        UpdateChecker.maybeAutoCheck(this)
         // Re-evaluate the schedule whenever the activity returns to the foreground. This is
         // essential when the wake alarm brings an already-running instance forward (which does
         // not re-run onCreate), so the screen powers on immediately instead of waiting for the
@@ -1158,6 +1164,33 @@ class MainActivity : AppCompatActivity() {
             // pending wake alarm so disabling the feature fully clears its side effects.
             cancelWakeAlarm()
             setFrameActive(true)
+        }
+    }
+
+    /**
+     * Handles the extras used by the update flow: show the "update available" dialog again, or
+     * install an APK whose download finished while the frame was in the background.
+     */
+    private fun handleUpdateIntent(intent: Intent?) {
+        if (intent == null) return
+        val apkPath = intent.getStringExtra(UpdateChecker.EXTRA_INSTALL_APK)
+        if (!apkPath.isNullOrBlank()) {
+            intent.removeExtra(UpdateChecker.EXTRA_INSTALL_APK)
+            UpdateUi.showInstallPrompt(this, java.io.File(apkPath))
+            return
+        }
+        if (intent.getBooleanExtra(UpdateChecker.EXTRA_SHOW_UPDATE, false)) {
+            intent.removeExtra(UpdateChecker.EXTRA_SHOW_UPDATE)
+            val known = UpdateChecker.latestKnownRelease(this)
+            if (known != null && UpdateChecker.isNewer(known.version, UpdateChecker.currentVersion(this))) {
+                UpdateUi.showUpdateDialog(this, known)
+            } else {
+                UpdateChecker.checkAsync(this) { release ->
+                    if (release != null && !isFinishing && !isDestroyed) {
+                        UpdateUi.showUpdateDialog(this, release)
+                    }
+                }
+            }
         }
     }
 

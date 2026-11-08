@@ -17,6 +17,11 @@ class ImmichFrameApp : Application() {
         FrameLog.init(this)
         FrameLog.i("app", "Process started (SDK ${android.os.Build.VERSION.SDK_INT})")
         try {
+            UpdateChecker.cleanupOldDownloads(this)
+        } catch (e: Exception) {
+            FrameLog.w("app", "Could not clean up old update files: ${e.message}")
+        }
+        try {
             ActiveScheduleManager.armWakeAlarm(this)
         } catch (e: Exception) {
             FrameLog.w("app", "Could not restore the wake alarm: ${e.message}")

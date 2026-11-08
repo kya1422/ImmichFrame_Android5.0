@@ -71,6 +71,18 @@
             android:title="Keep-Alive Service" />
     </PreferenceCategory>
 
+    <PreferenceCategory android:title="App Update">
+        <Preference
+            android:key="check_update"
+            android:summary="@string/update_installed_version"
+            android:title="@string/update_check_title" />
+        <SwitchPreferenceCompat
+            android:defaultValue="true"
+            android:key="autoUpdateCheck"
+            android:summary="@string/update_check_auto_summary"
+            android:title="@string/update_check_auto_title" />
+    </PreferenceCategory>
+
     <PreferenceCategory android:title="Diagnostics">
         <Preference
             android:key="diagnostics"

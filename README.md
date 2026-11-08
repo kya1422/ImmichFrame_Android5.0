@@ -59,6 +59,28 @@ In addition to enabling the keep-alive service:
 * The screensaver (Daydream) mode is started by Android itself, so the Active Times schedule
   cannot switch it on; it is closed when the frame is supposed to sleep.
 
+## 🔄 In-app updates
+
+The app can update itself from this fork's GitHub Releases, so a frame that hangs on a wall never
+needs a PC:
+
+* **Settings → App Update → Check for updates** asks the GitHub API for the newest release and
+  compares it with the installed version.
+* *Check automatically* (on by default) does the same once a day and posts a notification if a
+  new release exists. Nothing is downloaded without asking.
+* **Update now** downloads `app-debug.apk` with the system DownloadManager (progress in the
+  notification shade, survives the frame activity being recreated).
+* When the download finishes the app **verifies the APK before offering it**: the package name
+  must match and the signature must be identical to the installed app. A file from a proxy, a
+  mirror or a corrupted download is deleted and reported instead of being offered.
+* Android requires the one-time "allow installing from this app" permission (Android 8+); the
+  app explains this and opens the right system screen. The actual install is always confirmed by
+  the user in the system installer - Android does not allow silent updates for regular apps.
+
+The APKs of every release are signed with the same key (see below), so updates install over the
+existing app. Updates installed from a *different* build (for example the upstream project's
+debug build) need one uninstall first, because Android refuses to update across signing keys.
+
 ## 🔏 Release signing
 
 The APKs attached to the GitHub releases are signed with a **stable key** so that a new release

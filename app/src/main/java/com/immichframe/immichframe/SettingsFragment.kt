@@ -108,6 +108,19 @@ class SettingsFragment : PreferenceFragmentCompat() {
             }
             true
         }
+        val btnUpdate = findPreference<Preference>("check_update")
+        val chkAutoUpdate = findPreference<SwitchPreferenceCompat>("autoUpdateCheck")
+        btnUpdate?.summary = getString(
+            R.string.update_installed_version,
+            UpdateChecker.currentVersion(requireContext()),
+        )
+        btnUpdate?.setOnPreferenceClickListener {
+            val activity = activity ?: return@setOnPreferenceClickListener true
+            UpdateUi.checkAndPrompt(activity)
+            true
+        }
+        chkAutoUpdate?.isChecked = UpdateChecker.autoCheckEnabled(requireContext())
+
         val btnDiagnostics = findPreference<Preference>("diagnostics")
         btnDiagnostics?.setOnPreferenceClickListener {
             startActivity(Intent(requireContext(), DiagnosticsActivity::class.java))
