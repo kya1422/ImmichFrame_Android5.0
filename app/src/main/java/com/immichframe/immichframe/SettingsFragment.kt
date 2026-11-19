@@ -73,6 +73,21 @@ class SettingsFragment : PreferenceFragmentCompat() {
             val value = newValue as Boolean
             editActiveSchedule?.isVisible = value
             adminActiveSchedule?.isVisible = value
+            // The switch used to be written to the preferences by the framework without telling
+            // the rest of the app: no alarm was armed, the keep-alive service was not started or
+            // stopped, and an already sleeping frame did not come back before the next app start.
+            val context = requireContext()
+            if (value) {
+                ActiveScheduleManager.armWakeAlarm(context)
+                if (PreferenceManager.getDefaultSharedPreferences(context)
+                        .getBoolean("keepAlive", false)
+                ) {
+                    FrameKeepAliveService.start(context)
+                }
+            } else {
+                ActiveScheduleManager.cancelWakeAlarm(context)
+                FrameKeepAliveService.stop(context)
+            }
             true
         }
         editActiveSchedule?.setOnPreferenceClickListener {

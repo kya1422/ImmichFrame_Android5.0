@@ -53,6 +53,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:theme="@style/MyTheme.NoActionBar">
             <!-- Phone/tablet launcher) -->
             <intent-filter>
@@ -71,6 +72,19 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.HOME" />
                 <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+
+            <!-- Open by link (immichframe://open), e.g. from Home Assistant or a script.
+                 singleTask on purpose: the frame must stay one instance, so an intent that
+                 arrives while it runs is delivered to onNewIntent() instead of stacking a
+                 second activity. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="open"
+                    android:scheme="immichframe" />
             </intent-filter>
         </activity>
         <activity

@@ -681,7 +681,16 @@ class MainActivity : AppCompatActivity() {
                 ) {
                     super.onReceivedError(view, request, error)
 
-                    if (request?.isForMainFrame == true && error != null) {
+                    // Sub-resource failures (XHR, images, event streams) are the page's own
+                    // business. Reacting to them was the real bug: the reload below cancels any
+                    // request still in flight, that cancellation is reported here again, and the
+                    // frame ended up in an endless 5-second reload loop that also threw the user
+                    // out of the settings screen.
+                    if (request?.isForMainFrame != true) {
+                        return
+                    }
+
+                    if (error != null) {
                         view?.loadUrl("file:///android_asset/error_page.html")
 
                         Handler(Looper.getMainLooper()).postDelayed({
@@ -776,6 +785,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun previousAction() {
+        // The buttons can be hit before the server settings have arrived; serverSettings is
+        // a lateinit and touching it would crash the frame.
+        if (!useWebView && !::serverSettings.isInitialized) return
         if (useWebView) {
             // Simulate a key press
             webView.requestFocus()
@@ -792,6 +804,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun nextAction() {
+        // The buttons can be hit before the server settings have arrived; serverSettings is
+        // a lateinit and touching it would crash the frame.
+        if (!useWebView && !::serverSettings.isInitialized) return
         if (useWebView) {
             // Simulate a key press
             webView.requestFocus()
@@ -805,6 +820,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun pauseAction() {
+        // The buttons can be hit before the server settings have arrived; serverSettings is
+        // a lateinit and touching it would crash the frame.
+        if (!useWebView && !::serverSettings.isInitialized) return
         if (useWebView) {
             // Simulate a key press
             webView.requestFocus()
@@ -1135,6 +1153,11 @@ class MainActivity : AppCompatActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         FrameLog.i(TAG, "onNewIntent -> re-evaluating the schedule")
+        if (intent.data?.scheme == "immichframe") {
+            // immichframe://open: the frame simply has to come to the foreground, which the
+            // system already did by delivering the intent. Nothing to configure.
+            FrameLog.i(TAG, "Opened via immichframe://${intent.data?.host}")
+        }
         handleUpdateIntent(intent)
         if (intent.hasExtra(ScheduleWakeReceiver.EXTRA_FRAME_ACTIVE)) {
             val frameActive = intent.getBooleanExtra(ScheduleWakeReceiver.EXTRA_FRAME_ACTIVE, true)

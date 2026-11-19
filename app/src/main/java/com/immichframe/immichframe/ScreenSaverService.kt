@@ -552,7 +552,13 @@ class ScreenSaverService : DreamService() {
                 ) {
                     super.onReceivedError(view, request, error)
 
-                    if (request?.isForMainFrame == true && error != null) {
+                    // Same as MainActivity: only the main frame may trigger the error page and
+                    // the retry. A sub-resource failure used to start a reload loop here too.
+                    if (request?.isForMainFrame != true) {
+                        return
+                    }
+
+                    if (error != null) {
                         view?.loadUrl("file:///android_asset/error_page.html")
 
                         Handler(Looper.getMainLooper()).postDelayed({
