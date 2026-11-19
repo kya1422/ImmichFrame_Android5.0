@@ -82,6 +82,7 @@ class ScreenSaverService : DreamService() {
         override fun run() {
             if (isWeatherTimerRunning) {
                 handler.postDelayed(this, 600000)
+                acquireWakeLock()
                 getWeather()
             }
         }
@@ -718,8 +719,9 @@ class ScreenSaverService : DreamService() {
                 PowerManager.PARTIAL_WAKE_LOCK, "ImmichFrame::ScreenSaverWakeLock"
             )
         }
-        val lock = wakeLock ?: return
-        if (!lock.isHeld) lock.acquire(WAKE_LOCK_TIMEOUT_MS)
+        // Renew before the timeout can expire. Waiting for isHeld == false would couple this to
+        // the ROM releasing the lock exactly on time, and a longer interval would come too late.
+        wakeLock?.acquire(WAKE_LOCK_TIMEOUT_MS)
     }
 
     private fun releaseWakeLock() {

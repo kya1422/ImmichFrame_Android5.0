@@ -85,18 +85,42 @@ class WidgetProvider : AppWidgetProvider() {
                         getNextImage(apiService) { imageResponse ->
                             imageResponse?.let {
                                 CoroutineScope(Dispatchers.IO).launch {
-                                    var randomBitmap =
-                                        Helpers.decodeBitmapFromBytes(it.randomImageBase64)
+                                    // The try/catch around this launch does not protect it: a
+                                    // CoroutineScope() with no handler reports a failure to the
+                                    // thread's uncaught exception handler, which on Android
+                                    // terminates the process. A single undecodable photo would
+                                    // therefore kill the app while it was updating the widget.
+                                    try {
+                                        val decoded =
+                                            Helpers.decodeBitmapFromBytes(it.randomImageBase64)
+                                                ?: run {
+                                                    Log.w(
+                                                        "WidgetDebug",
+                                                        "Widget photo could not be decoded, keeping the previous one"
+                                                    )
+                                                    return@launch
+                                                }
+                                        val randomBitmap =
+                                            Helpers.reduceBitmapQuality(decoded, 1000)
 
-                                    //randomBitmap = Helpers.reduceBitmapQuality(randomBitmap, maxSize)
-                                    randomBitmap = Helpers.reduceBitmapQuality(randomBitmap, 1000)
-
-                                    withContext(Dispatchers.Main) {
-                                        views.setImageViewBitmap(
-                                            R.id.widgetImageView,
-                                            randomBitmap
-                                        )
-                                        appWidgetManager.updateAppWidget(appWidgetId, views)
+                                        withContext(Dispatchers.Main) {
+                                            views.setImageViewBitmap(
+                                                R.id.widgetImageView,
+                                                randomBitmap
+                                            )
+                                            runCatching {
+                                                appWidgetManager.updateAppWidget(appWidgetId, views)
+                                            }.onFailure { e ->
+                                                // The widget was removed between the request and
+                                                // the result (or the bitmap exceeds the host's
+                                                // memory budget); nothing to update any more.
+                                                Log.w("WidgetDebug", "Widget update dropped: ${e.message}")
+                                            }
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e("WidgetDebug", "Error updating widget: ${e.message}")
+                                    } catch (e: OutOfMemoryError) {
+                                        Log.e("WidgetDebug", "Widget photo too large: ${e.message}")
                                     }
                                 }
                             }

@@ -208,7 +208,10 @@ class SettingsFragment : PreferenceFragmentCompat() {
                 MaterialAlertDialogBuilder(requireContext())
                     .setTitle("Confirm Action")
                     .setMessage(
-                        "This will disable access to the settings screen, the only way back is via RPC commands (or uninstall/reinstall).\n" +
+                        "This disables the settings screen (swipe and the remote's up key). " +
+                                "The only way back is the RPC command /settings, sent from this device itself " +
+                                "(http://127.0.0.1:53287/settings) - a phone or PC on the same network can no " +
+                                "longer reach it - or uninstall/reinstall.\n" +
                                 "Are you absolutely sure?"
                     )
                     .setPositiveButton("Yes", null) // Proceed
