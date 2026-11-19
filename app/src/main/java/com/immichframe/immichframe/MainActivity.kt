@@ -222,7 +222,14 @@ class MainActivity : AppCompatActivity() {
 
     private val settingsLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            if (result.resultCode == RESULT_OK) {
+            // settingsAction() stops the slideshow before the screen opens, so it has to be
+            // restarted here - whatever way the screen was left. The Close button returns
+            // RESULT_OK, but Back (and the RPC command) do not, and only reloading on RESULT_OK
+            // left the frame frozen on the last photo until the app was restarted (the settings
+            // screen writes the preferences directly, so "the result" carries no information).
+            val hasServerUrl = PreferenceManager.getDefaultSharedPreferences(applicationContext)
+                .getString("webview_url", "")?.trim().orEmpty().isNotEmpty()
+            if (result.resultCode == RESULT_OK || hasServerUrl) {
                 loadSettings()
             }
         }
@@ -307,10 +314,14 @@ class MainActivity : AppCompatActivity() {
             onNextCommand = { runOnUiThread { nextAction() } },
             onPreviousCommand = { runOnUiThread { previousAction() } },
             onPauseCommand = { runOnUiThread { pauseAction() } },
-            onSettingsCommand = { runOnUiThread { settingsAction() } },
+            onSettingsCommand = { runOnUiThread { settingsAction(allowWhenLocked = true) } },
             onBrightnessCommand = { brightness -> runOnUiThread { screenBrightnessAction(brightness) } },
         )
-        rcpServer.start()
+        // start() throws when the port is taken (NanoHTTPD binds 127.0.0.1:53287). The RPC
+        // commands are a convenience, so a busy port must not take the whole frame down.
+        runCatching { rcpServer.start() }.onFailure { e ->
+            FrameLog.w(TAG, "RPC server could not start (${e.message}); the commands are unavailable")
+        }
 
         // ContextCompat.registerReceiver is required: apps targeting Android 14+ must pass
         // RECEIVER_NOT_EXPORTED/RECEIVER_EXPORTED, otherwise registration throws.
@@ -355,24 +366,52 @@ class MainActivity : AppCompatActivity() {
         val renderGeneration = imageRenderGeneration
         // Snapshot on the main thread: playVideo() clears portraitCache while decoding
         val cachedPortrait = portraitCache
+        // Measured on the main thread: View#getWidth() does not guard against being read from
+        // another thread, and the size is what decides the decode target below.
+        val decorView = window.decorView
+        val maxSize = maxOf(decorView.width, decorView.height)
         CoroutineScope(Dispatchers.IO).launch {
-            //get the window size
-            val decorView = window.decorView
-            val width = decorView.width
-            val height = decorView.height
-            val maxSize = maxOf(width, height)
-
-            var randomBitmap = Helpers.decodeBitmapFromBytes(imageResponse.randomImageBase64)
-            val thumbHashBitmap = Helpers.decodeBitmapFromBytes(imageResponse.thumbHashImageBase64)
+            // A truncated or non-image payload makes the decoder return null, and dereferencing
+            // that threw inside this coroutine and took the whole frame process down. Decoding is
+            // therefore allowed to fail: the slot is skipped instead of crashing.
+            var randomBitmap: Bitmap? = null
+            var thumbHashBitmap: Bitmap? = null
+            try {
+                randomBitmap = Helpers.decodeBitmapFromBytes(imageResponse.randomImageBase64)
+                thumbHashBitmap = Helpers.decodeBitmapFromBytes(imageResponse.thumbHashImageBase64)
+            } catch (e: OutOfMemoryError) {
+                FrameLog.w(TAG, "Image too large for this device's heap: ${e.message}")
+            } catch (e: Exception) {
+                FrameLog.w(TAG, "Image could not be decoded: ${e.message}")
+            }
+            val image = randomBitmap
+            if (image == null) {
+                withContext(Dispatchers.Main) {
+                    if (renderGeneration == imageRenderGeneration) getNextImage()
+                }
+                return@launch
+            }
+            // The blurred background is decoration only; a missing thumb hash falls back to a
+            // single transparent pixel instead of disabling the whole slot.
+            val thumb = thumbHashBitmap
+                ?: Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
             var isMerged = false
 
-            val isPortrait = randomBitmap.height > randomBitmap.width
+            val isPortrait = image.height > image.width
+            randomBitmap = image
+            val portraitBitmap = if (isPortrait && serverSettings.layout == "splitview") {
+                // NULL when the cached portrait cannot be decoded; the merge is then skipped
+                // instead of crashing on a null bitmap.
+                runCatching {
+                    Helpers.decodeBitmapFromBytes(cachedPortrait?.randomImageBase64 ?: "")
+                }.getOrNull()
+            } else {
+                null
+            }
             if (isPortrait && serverSettings.layout == "splitview") {
-                if (cachedPortrait != null) {
+                if (portraitBitmap != null) {
                     var decodedPortraitImageBitmap =
-                        Helpers.decodeBitmapFromBytes(cachedPortrait.randomImageBase64)
-                    decodedPortraitImageBitmap =
-                        Helpers.reduceBitmapQuality(decodedPortraitImageBitmap, maxSize)
+                        Helpers.reduceBitmapQuality(portraitBitmap, maxSize)
                     randomBitmap = Helpers.reduceBitmapQuality(randomBitmap, maxSize)
 
                     val colorString =
@@ -384,7 +423,7 @@ class MainActivity : AppCompatActivity() {
                     isMerged = true
 
                     decodedPortraitImageBitmap.recycle()
-                } else {
+                } else if (cachedPortrait == null) {
                     // Switch to the main thread, like playVideo(), so a video cannot start
                     // between the check and the assignment.
                     withContext(Dispatchers.Main) {
@@ -399,15 +438,16 @@ class MainActivity : AppCompatActivity() {
                 randomBitmap = Helpers.reduceBitmapQuality(randomBitmap, maxSize * 2)
             }
 
+            val finalImage = requireNotNull(randomBitmap)
             withContext(Dispatchers.Main) {
                 if (renderGeneration != imageRenderGeneration) {
                     // A video started while this image was decoding; it was never attached to
                     // a view, so both bitmaps can be freed right away.
-                    randomBitmap.recycle()
-                    thumbHashBitmap.recycle()
+                    finalImage.recycle()
+                    thumb.recycle()
                     return@withContext
                 }
-                updateUI(randomBitmap, thumbHashBitmap, isMerged, imageResponse, cachedPortrait)
+                updateUI(finalImage, thumb, isMerged, imageResponse, cachedPortrait)
             }
         }
     }
@@ -811,10 +851,13 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onFailure(call: Call<Helpers.ImageResponse>, t: Throwable) {
-                t.printStackTrace()
+                val reason = t.localizedMessage ?: t.javaClass.simpleName
+                // Also written to the event log: the Toast is gone after a few seconds and the
+                // frame that failed here has nothing else to show.
+                FrameLog.w(TAG, "Could not load an image: $reason")
                 Toast.makeText(
                     this@MainActivity,
-                    "Failed to load image: ${t.localizedMessage}",
+                    getString(R.string.settings_load_failed_short, reason),
                     Toast.LENGTH_SHORT
                 ).show()
             }
@@ -987,8 +1030,11 @@ class MainActivity : AppCompatActivity() {
             } else {
                 savedUrl
             }
-            handler.removeCallbacks(imageRunnable)
-            handler.removeCallbacks(weatherRunnable)
+            // Switching back to the WebView leaves the native image timer armed: the runnable
+            // kept calling getNextImage() every interval, hitting the API and decoding photos
+            // that were never shown (needless traffic and memory on a frame that runs 24/7).
+            stopImageTimer()
+            stopWeatherTimer()
 
             webView.webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(
@@ -1081,14 +1127,29 @@ class MainActivity : AppCompatActivity() {
                     onSettingsLoaded()
                 },
                 onFailure = { error ->
-                    Toast.makeText(
-                        this,
-                        "Failed to load server settings: ${error.localizedMessage}",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    reportSettingsLoadFailure(error)
                 }
             )
         }
+    }
+
+    /**
+     * A failure to load the server settings used to be a Toast and nothing else: after a few
+     * seconds a frame that can never start showed a black screen with no explanation and no way
+     * to find out why (the usual causes are a wrong URL, a wrong authorization secret or an
+     * unreachable server). It is now logged for the Diagnostics screen and left on the frame.
+     */
+    private fun reportSettingsLoadFailure(error: Throwable) {
+        val reason = error.localizedMessage ?: error.javaClass.simpleName
+        FrameLog.w(TAG, "Could not load the server settings: $reason")
+        Toast.makeText(
+            this,
+            getString(R.string.settings_load_failed_short, reason),
+            Toast.LENGTH_LONG
+        ).show()
+        txtPhotoInfo.visibility = View.VISIBLE
+        txtPhotoInfo.text = getString(R.string.settings_load_failed_inline, reason)
+        txtDateTime.visibility = View.GONE
     }
 
     /** True when [failingUrl] is the page we are showing, not a sub-resource of it. */
@@ -1236,7 +1297,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun settingsAction() {
+    /** Whether the user locked the settings screen ("Lock access to these settings?"). */
+    private fun isSettingsLocked(): Boolean =
+        PreferenceManager.getDefaultSharedPreferences(applicationContext)
+            .getBoolean("settingsLock", false)
+
+    /**
+     * Opens the settings screen.
+     *
+     * [allowWhenLocked] is used by the RPC command: locking the screen must not remove the only
+     * way back in on a frame without a physical keyboard. The D-pad up key and the swipe gesture
+     * are the paths a passer-by can use, and those honour the lock.
+     */
+    private fun settingsAction(allowWhenLocked: Boolean = false) {
+        if (!allowWhenLocked && isSettingsLocked()) {
+            FrameLog.i(TAG, "Settings locked, ignoring the local open request")
+            Toast.makeText(this, R.string.settings_locked_toast, Toast.LENGTH_SHORT).show()
+            return
+        }
         val intent = Intent(this, SettingsActivity::class.java)
         stopVideo()
         stopImageTimer()

@@ -84,4 +84,7 @@
     <string name="update_install_now">Install</string>
     <string name="update_offline">No network connection</string>
     <string name="update_no_apk_in_release">The latest release has no APK attached</string>
+    <string name="settings_locked_toast">The settings are locked. Use the RPC /settings command or unlock them first.</string>
+    <string name="settings_load_failed_inline">Cannot load the server settings (%1$s) \u2014 check the server URL and the authorization secret.</string>
+    <string name="settings_load_failed_short">Server settings unavailable (%1$s)</string>
 </resources>

@@ -73,6 +73,7 @@ class ScreenSaverService : DreamService() {
         override fun run() {
             if (isImageTimerRunning) {
                 handler.postDelayed(this, (serverSettings.interval * 1000).toLong())
+                acquireWakeLock()
                 getNextImage()
             }
         }
@@ -197,6 +198,11 @@ class ScreenSaverService : DreamService() {
     }
 
     private fun showImage(imageResponse: Helpers.ImageResponse) {
+        // Snapshot on the main thread (this is always called from it): the coroutine below runs
+        // on IO, and reading portraitCache from two places let updateUI() hit a null that the
+        // later `portraitCache!!` dereferences turned into a crash. MainActivity already works
+        // this way; the Daydream never got the same fix.
+        val cachedPortrait = portraitCache
         CoroutineScope(Dispatchers.IO).launch {
             //get the window size
             val decorView = window.decorView
@@ -204,17 +210,39 @@ class ScreenSaverService : DreamService() {
             val height = decorView.height
             val maxSize = maxOf(width, height)
 
-            var randomBitmap = Helpers.decodeBitmapFromBytes(imageResponse.randomImageBase64)
-            val thumbHashBitmap = Helpers.decodeBitmapFromBytes(imageResponse.thumbHashImageBase64)
+            // Decoding may legitimately fail (truncated payload, unsupported image); that used
+            // to throw inside the coroutine and kill the screensaver process.
+            var randomBitmap: Bitmap? = null
+            var thumbHashBitmap: Bitmap? = null
+            try {
+                randomBitmap = Helpers.decodeBitmapFromBytes(imageResponse.randomImageBase64)
+                thumbHashBitmap = Helpers.decodeBitmapFromBytes(imageResponse.thumbHashImageBase64)
+            } catch (e: OutOfMemoryError) {
+                FrameLog.w("screensaver", "Image too large for this device's heap: ${e.message}")
+            } catch (e: Exception) {
+                FrameLog.w("screensaver", "Image could not be decoded: ${e.message}")
+            }
+            val image = randomBitmap
+            if (image == null) {
+                withContext(Dispatchers.Main) { getNextImage() }
+                return@launch
+            }
+            val thumb = thumbHashBitmap ?: Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
             var isMerged = false
 
-            val isPortrait = randomBitmap.height > randomBitmap.width
+            val isPortrait = image.height > image.width
+            randomBitmap = image
+            val portraitBitmap = if (isPortrait && serverSettings.layout == "splitview") {
+                runCatching {
+                    Helpers.decodeBitmapFromBytes(cachedPortrait?.randomImageBase64 ?: "")
+                }.getOrNull()
+            } else {
+                null
+            }
             if (isPortrait && serverSettings.layout == "splitview") {
-                if (portraitCache != null) {
+                if (portraitBitmap != null) {
                     var decodedPortraitImageBitmap =
-                        Helpers.decodeBitmapFromBytes(portraitCache!!.randomImageBase64)
-                    decodedPortraitImageBitmap =
-                        Helpers.reduceBitmapQuality(decodedPortraitImageBitmap, maxSize)
+                        Helpers.reduceBitmapQuality(portraitBitmap, maxSize)
                     randomBitmap = Helpers.reduceBitmapQuality(randomBitmap, maxSize)
 
                     val colorString =
@@ -226,17 +254,23 @@ class ScreenSaverService : DreamService() {
                     isMerged = true
 
                     decodedPortraitImageBitmap.recycle()
-                } else {
-                    portraitCache = imageResponse
-                    getNextImage()
+                } else if (cachedPortrait == null) {
+                    // The next photo will be merged with this one; the assignment runs on the
+                    // main thread so it cannot race with updateUI() reading the cache.
+                    withContext(Dispatchers.Main) {
+                        portraitCache = imageResponse
+                        getNextImage()
+                    }
                     return@launch
                 }
             } else {
                 randomBitmap = Helpers.reduceBitmapQuality(randomBitmap, maxSize * 2)
             }
 
+            val finalImage = requireNotNull(randomBitmap)
             withContext(Dispatchers.Main) {
-                updateUI(randomBitmap, thumbHashBitmap, isMerged, imageResponse)
+                // Hand the snapshot over instead of letting updateUI() read the mutable field.
+                updateUI(finalImage, thumb, isMerged, imageResponse, cachedPortrait)
             }
         }
     }
@@ -245,7 +279,8 @@ class ScreenSaverService : DreamService() {
         finalImage: Bitmap,
         thumbHashBitmap: Bitmap,
         isMerged: Boolean,
-        imageResponse: Helpers.ImageResponse
+        imageResponse: Helpers.ImageResponse,
+        mergedPortrait: Helpers.ImageResponse? = null,
     ) {
         val imageViewOld = if (isShowingFirst) imageView1 else imageView2
         val imageViewNew = if (isShowingFirst) imageView2 else imageView1
@@ -284,17 +319,17 @@ class ScreenSaverService : DreamService() {
         // Toggle active ImageView
         isShowingFirst = !isShowingFirst
 
-        if (isMerged) {
+        if (isMerged && mergedPortrait != null) {
             val mergedPhotoDate =
-                if (portraitCache!!.photoDate.isNotEmpty() || imageResponse.photoDate.isNotEmpty()) {
-                    "${portraitCache!!.photoDate} | ${imageResponse.photoDate}"
+                if (mergedPortrait.photoDate.isNotEmpty() || imageResponse.photoDate.isNotEmpty()) {
+                    "${mergedPortrait.photoDate} | ${imageResponse.photoDate}"
                 } else {
                     ""
                 }
 
             val mergedImageLocation =
-                if (portraitCache!!.imageLocation.isNotEmpty() || imageResponse.imageLocation.isNotEmpty()) {
-                    "${portraitCache!!.imageLocation} | ${imageResponse.imageLocation}"
+                if (mergedPortrait.imageLocation.isNotEmpty() || imageResponse.imageLocation.isNotEmpty()) {
+                    "${mergedPortrait.imageLocation} | ${imageResponse.imageLocation}"
                 } else {
                     ""
                 }
@@ -384,10 +419,11 @@ class ScreenSaverService : DreamService() {
             }
 
             override fun onFailure(call: Call<Helpers.ImageResponse>, t: Throwable) {
-                t.printStackTrace()
+                val reason = t.localizedMessage ?: t.javaClass.simpleName
+                FrameLog.w("screensaver", "Could not load an image: $reason")
                 Toast.makeText(
                     applicationContext,
-                    "Failed to load image: ${t.localizedMessage}",
+                    getString(R.string.settings_load_failed_short, reason),
                     Toast.LENGTH_SHORT
                 ).show()
             }
@@ -550,10 +586,12 @@ class ScreenSaverService : DreamService() {
                     request: WebResourceRequest?,
                     error: WebResourceError?
                 ) {
-                    super.onReceivedError(view, request, error)
-
-                    // Same as MainActivity: only the main frame may trigger the error page and
-                    // the retry. A sub-resource failure used to start a reload loop here too.
+                    // super is intentionally NOT called (same reasoning as MainActivity): the
+                    // framework implementation would forward a main frame error to the deprecated
+                    // four argument callback, so both bodies would run for one failure.
+                    //
+                    // Only the main frame may trigger the error page and the retry. A
+                    // sub-resource failure used to start a reload loop here too.
                     if (request?.isForMainFrame != true) {
                         return
                     }
@@ -585,10 +623,18 @@ class ScreenSaverService : DreamService() {
                     onSettingsLoaded()
                 },
                 onFailure = { error ->
+                    // The screensaver is a full screen surface with no other hint: a failed
+                    // settings load has to be visible and recorded, not just a Toast.
+                    FrameLog.w("screensaver", "Could not load the server settings: ${error.localizedMessage}")
+                    txtPhotoInfo.visibility = View.VISIBLE
+                    txtPhotoInfo.text = getString(
+                        R.string.settings_load_failed_inline,
+                        error.localizedMessage ?: error.javaClass.simpleName,
+                    )
                     Toast.makeText(
                         this,
-                        "Failed to load server settings: ${error.localizedMessage}",
-                        Toast.LENGTH_SHORT
+                        getString(R.string.settings_load_failed_short, error.localizedMessage),
+                        Toast.LENGTH_LONG,
                     ).show()
                 }
             )
@@ -652,14 +698,28 @@ class ScreenSaverService : DreamService() {
         }
     }
 
+    private companion object {
+        /** Renewed on every slideshow tick; see [acquireWakeLock]. */
+        const val WAKE_LOCK_TIMEOUT_MS = 120 * 60 * 1000L
+    }
+
+    /**
+     * Takes (or re-takes) the partial wake lock.
+     *
+     * The lock is requested with a two hour timeout, but the Daydream screen is meant to stay up
+     * indefinitely: without renewing it the CPU went back to sleep after two hours and the
+     * slideshow simply froze. Every image tick renews it, which also covers a ROM that silently
+     * drops a wake lock.
+     */
     private fun acquireWakeLock() {
         if (wakeLock == null) {
             val powerManager = getSystemService(POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK, "ImmichFrame::ScreenSaverWakeLock"
             )
-            wakeLock?.acquire(120 * 60 * 1000L)
         }
+        val lock = wakeLock ?: return
+        if (!lock.isHeld) lock.acquire(WAKE_LOCK_TIMEOUT_MS)
     }
 
     private fun releaseWakeLock() {
