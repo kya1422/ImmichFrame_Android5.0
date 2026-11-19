@@ -98,11 +98,28 @@ jobs:
             echo "使い方は README を参照してください。"
           } > "$RUNNER_TEMP/release-notes.md"
 
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release edit "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md"
-            gh release upload "$GITHUB_REF_NAME" app/build/outputs/apk/debug/*.apk --clobber
+          # A failed `gh` call is reported as an annotation so the reason is visible from the API
+          # (the run log itself needs admin rights to download).
+          run_gh() {
+            if ! "$@" 2>"$RUNNER_TEMP/gh-error.txt"; then
+              echo "::error::gh $1 failed: $(tr '\n' ' ' < "$RUNNER_TEMP/gh-error.txt" | head -c 900)"
+              return 1
+            fi
+          }
+
+          {
+            echo "### Release step diagnostics"
+            echo "- token permissions: contents=write requested in the workflow"
+            echo "- repo: $GITHUB_REPOSITORY"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if run_gh gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null; then
+            run_gh gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --notes-file "$RUNNER_TEMP/release-notes.md"
+            run_gh gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              app/build/outputs/apk/debug/*.apk --clobber
           else
-            gh release create "$GITHUB_REF_NAME" \
+            run_gh gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
               --title "ImmichFrame Android $GITHUB_REF_NAME" \
               --notes-file "$RUNNER_TEMP/release-notes.md" \
               app/build/outputs/apk/debug/*.apk
