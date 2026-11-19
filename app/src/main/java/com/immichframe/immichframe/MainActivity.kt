@@ -121,11 +121,20 @@ class MainActivity : AppCompatActivity() {
     private var preparedVideoPath: String? = null
     private val videoPrefetch = java.util.concurrent.Executors.newSingleThreadExecutor()
     /** The download of the current video; cancelled as soon as the user navigates away. */
+    @Volatile
     private var videoCall: okhttp3.Call? = null
     /** Identifies the current download so a late callback cannot touch a newer one's files. */
+    @Volatile
     private var videoDownloadToken = 0
     private var imageVisibilityBeforeVideo = Pair(View.GONE, View.GONE)
     /** Fires when playback never reaches the first frame; otherwise the video slot is stuck. */
+    /** Skips a video whose download never completes (slow or stalled connection). */
+    private val videoFetchTimeoutRunnable = Runnable {
+        if (isPlayingVideo && videoView.visibility != View.VISIBLE) {
+            FrameLog.w(TAG, "Video fetch timed out, skipping")
+            onVideoFinished()
+        }
+    }
     private val videoStallRunnable = Runnable {
         if (isPlayingVideo) {
             FrameLog.w(TAG, "Video did not start in time, skipping")
@@ -568,13 +577,17 @@ class MainActivity : AppCompatActivity() {
         // Never pair a portrait from before the video with whatever comes after it
         portraitCache = null
 
-        // A SurfaceView only clears its own rect, so hide the images around it
+        // The photo stays on screen while the video is being fetched (a slow link through the
+        // tunnel takes a while); the media surface is only shown once there is something to show.
         imageVisibilityBeforeVideo = Pair(imageView1.visibility, imageView2.visibility)
-        imageView1.visibility = View.INVISIBLE
-        imageView2.visibility = View.INVISIBLE
         txtPhotoInfo.text = ""
-        videoView.visibility = View.VISIBLE
+        videoView.visibility = View.GONE
         preparedVideoPath = null
+        // Photos stay visible until the prepared listener really starts the video.
+        imageVisibilityBeforeVideo = Pair(
+            if (imageView1.visibility == View.VISIBLE) View.VISIBLE else View.GONE,
+            if (imageView2.visibility == View.VISIBLE) View.VISIBLE else View.GONE,
+        )
 
         videoView.setOnPreparedListener { player ->
             if (serverSettings.playAudio) {
@@ -582,6 +595,11 @@ class MainActivity : AppCompatActivity() {
             } else {
                 player.setVolume(0f, 0f)
             }
+            // Now (and only now) the photos give way to the video surface.
+            imageVisibilityBeforeVideo = Pair(imageView1.visibility, imageView2.visibility)
+            imageView1.visibility = View.INVISIBLE
+            imageView2.visibility = View.INVISIBLE
+            videoView.visibility = View.VISIBLE
             videoView.start()
         }
         videoView.setOnInfoListener { _, what, _ ->
@@ -599,6 +617,10 @@ class MainActivity : AppCompatActivity() {
 
         FrameLog.i(TAG, "Preparing video $assetId")
         prepareVideo(assetId)
+        // Hard limit for the whole fetch + start: a stalled download would otherwise freeze the
+        // slideshow (the photo would stay up indefinitely).
+        handler.removeCallbacks(videoFetchTimeoutRunnable)
+        handler.postDelayed(videoFetchTimeoutRunnable, 90_000)
     }
 
     /**
@@ -624,7 +646,13 @@ class MainActivity : AppCompatActivity() {
             var ok = false
             var reason = ""
             try {
-                val request = Request.Builder().url(url).get().build()
+                val request = Request.Builder().url(url).get().apply {
+                    // The download bypasses Retrofit, so the header its interceptor adds has to be
+                    // set here as well - without it an authenticated server answers 401.
+                    if (serverAuthSecret.isNotEmpty()) {
+                        header("Authorization", "Bearer $serverAuthSecret")
+                    }
+                }.build()
                 val call = Helpers.videoClient(this).newCall(request)
                 videoCall = call
                 call.execute().use { response ->
@@ -707,9 +735,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun onVideoFinished() {
         if (!isPlayingVideo) return
-        // stopVideo() calls stopPlayback(), which can fire the completion/error listener again.
-        // Clearing the flag first is what stops that from recursing forever.
-        isPlayingVideo = false
+        // stopVideo() clears isPlayingVideo *before* it calls stopPlayback(), so a completion or
+        // error callback fired from inside stopPlayback() returns early at the check above. That
+        // is what prevents the recursion - clearing the flag here would instead make stopVideo()
+        // return immediately and leave the video (and its black surface) on screen.
         stopVideo()
         getNextImage()
         startImageTimer()
@@ -717,12 +746,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopVideo() {
         if (!isPlayingVideo) return
+        handler.removeCallbacks(videoFetchTimeoutRunnable)
         isPlayingVideo = false
         preparedVideoPath = null
         cancelVideoDownload()
         handler.removeCallbacks(videoStallRunnable)
         runCatching { videoView.stopPlayback() }
         videoView.visibility = View.GONE
+        // Restore exactly the state the photos had before the video slot. The pair doubles as
+        // "a video really started" marker: playVideo() no longer hides the photos, the prepared
+        // listener does.
         imageView1.visibility = imageVisibilityBeforeVideo.first
         imageView2.visibility = imageVisibilityBeforeVideo.second
     }
@@ -970,6 +1003,24 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
 
+                /**
+                 * Legacy variant. The WebResourceRequest version below only exists from API 23,
+                 * so on the d-01H (Android 5.1) nothing would ever be called - no error page and
+                 * no retry when the server goes away.
+                 */
+                @Suppress("DEPRECATION", "OverridingDeprecatedMember")
+                override fun onReceivedError(
+                    view: WebView?,
+                    errorCode: Int,
+                    description: String?,
+                    failingUrl: String?
+                ) {
+                    super.onReceivedError(view, errorCode, description, failingUrl)
+                    if (failingUrl == null || failingUrl == "about:blank") return
+                    if (!isMainFrameFailure(failingUrl)) return
+                    showWebErrorPage(view, errorCode, description, failingUrl)
+                }
+
                 override fun onReceivedError(
                     view: WebView?,
                     request: WebResourceRequest?,
@@ -987,30 +1038,8 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     if (error != null) {
-                        view?.loadUrl("file:///android_asset/error_page.html")
-
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            val errorCode = error.errorCode
-                            val errorDescription = error.description.toString().replace("'", "\\'")
-                            view?.evaluateJavascript("showError('$errorCode', '$errorDescription')", null)
-                        }, 500)
+                        showWebErrorPage(view, error.errorCode, error.description.toString(), request.url.toString())
                     }
-                    Handler(Looper.getMainLooper()).postDelayed({
-                        //check url again in case the user has changed it
-                        var currentUrl = prefs.getString("webview_url", "")?.trim() ?: ""
-                        currentUrl = if (authSecret.isNotEmpty()) {
-                            savedUrl.toUri()
-                                .buildUpon()
-                                .appendQueryParameter("authsecret", authSecret)
-                                .build()
-                                .toString()
-                        } else {
-                            currentUrl
-                        }
-                        if (currentUrl.isNotEmpty()) {
-                            webView.loadUrl(currentUrl)
-                        }
-                    }, 5000)
                 }
             }
             webView.settings.javaScriptEnabled = true
@@ -1036,6 +1065,48 @@ class MainActivity : AppCompatActivity() {
                 }
             )
         }
+    }
+
+    /** True when [failingUrl] is the page we are showing, not a sub-resource of it. */
+    private fun isMainFrameFailure(failingUrl: String): Boolean {
+        val current = PreferenceManager.getDefaultSharedPreferences(applicationContext)
+            .getString("webview_url", "")?.trim().orEmpty()
+        if (current.isEmpty()) return true
+        // Compare scheme + host + path; the query string (authsecret) may differ.
+        return failingUrl.split('?').first() == current.split('?').first()
+    }
+
+    /**
+     * Shows the local error page and retries once with the (possibly edited) URL.
+     * Shared by the API 23+ and the legacy (API 21/22) callbacks, which never both fire.
+     */
+    private fun showWebErrorPage(
+        view: WebView?,
+        errorCode: Int,
+        description: String?,
+        failingUrl: String?,
+    ) {
+        FrameLog.w(TAG, "WebView error $errorCode on $failingUrl: $description")
+        view?.loadUrl("file:///android_asset/error_page.html")
+        Handler(Looper.getMainLooper()).postDelayed({
+            val text = (description ?: "").replace("'", "\\'")
+            view?.evaluateJavascript("showError('$errorCode', '$text')", null)
+        }, 500)
+
+        Handler(Looper.getMainLooper()).postDelayed({
+            val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
+            val url = prefs.getString("webview_url", "")?.trim().orEmpty()
+            val authSecret = prefs.getString("authSecret", "")?.trim().orEmpty()
+            val target = if (authSecret.isNotEmpty() && url.isNotEmpty()) {
+                url.toUri().buildUpon()
+                    .appendQueryParameter("authsecret", authSecret)
+                    .build()
+                    .toString()
+            } else {
+                url
+            }
+            if (target.isNotEmpty()) view?.loadUrl(target)
+        }, 5000)
     }
 
     private fun onSettingsLoaded() {
@@ -1463,12 +1534,9 @@ class MainActivity : AppCompatActivity() {
             FrameLog.i(TAG, "Opened via immichframe://${intent.data?.host}")
         }
         handleUpdateIntent(intent)
-        if (intent.hasExtra(ScheduleWakeReceiver.EXTRA_FRAME_ACTIVE)) {
-            val frameActive = intent.getBooleanExtra(ScheduleWakeReceiver.EXTRA_FRAME_ACTIVE, true)
-            isManualOverride = false
-            setFrameActive(frameActive)
-            return
-        }
+        // No EXTRA_FRAME_ACTIVE handling here: MainActivity is exported (launcher, HOME, deep
+        // link), so any app could put the frame to sleep with that extra. Sleep/wake commands
+        // arrive through the (not exported) frameCommandReceiver instead.
         handler.post { checkActiveTime() }
     }
 
@@ -1503,7 +1571,14 @@ class MainActivity : AppCompatActivity() {
         val apkPath = intent.getStringExtra(UpdateChecker.EXTRA_INSTALL_APK)
         if (!apkPath.isNullOrBlank()) {
             intent.removeExtra(UpdateChecker.EXTRA_INSTALL_APK)
-            UpdateUi.showInstallPrompt(this, java.io.File(apkPath))
+            // MainActivity is exported, so any app can send this extra with an arbitrary path -
+            // and a failed verification deletes the file. Only our own download is accepted.
+            val file = java.io.File(apkPath)
+            if (UpdateChecker.isOwnDownload(this, file)) {
+                UpdateUi.showInstallPrompt(this, file)
+            } else {
+                FrameLog.w(TAG, "Ignoring an install path that is not our download: $apkPath")
+            }
             return
         }
         if (intent.getBooleanExtra(UpdateChecker.EXTRA_SHOW_UPDATE, false)) {

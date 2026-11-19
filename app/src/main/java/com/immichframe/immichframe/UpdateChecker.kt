@@ -17,12 +17,9 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
 import androidx.preference.PreferenceManager
+import okhttp3.Request
 import org.json.JSONObject
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
-import java.net.HttpURLConnection
-import java.net.URL
 import java.security.MessageDigest
 import java.util.concurrent.Executors
 
@@ -160,25 +157,33 @@ object UpdateChecker {
             FrameLog.i(TAG, "Update check skipped: no network")
             return null
         }
-        val connection = (URL(RELEASES_API).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 10_000
-            readTimeout = 10_000
-            setRequestProperty("Accept", "application/vnd.github+json")
-            setRequestProperty("User-Agent", "ImmichFrame-Android/${currentVersion(context)}")
+        // HttpURLConnection would use the platform TLS stack, which on Android 5 cannot verify
+        // current certificate chains; the app's own OkHttp client (bundled CA list, Conscrypt)
+        // is the one that is known to work on these devices.
+        val client = try {
+            Helpers.createDownloadClient(context)
+        } catch (e: Exception) {
+            FrameLog.w(TAG, "Could not build the HTTP client: ${e.message}")
+            return null
         }
-        try {
-            val code = connection.responseCode
-            if (code !in 200..299) {
-                FrameLog.w(TAG, "GitHub API returned HTTP $code")
-                return null
+        val request = Request.Builder()
+            .url(RELEASES_API)
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "ImmichFrame-Android/${currentVersion(context)}")
+            .get()
+            .build()
+        return try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    FrameLog.w(TAG, "GitHub API returned HTTP ${response.code}")
+                    return@use null
+                }
+                val body = response.body?.string() ?: return@use null
+                parseRelease(body)
             }
-            val body = BufferedReader(InputStreamReader(connection.inputStream, "UTF-8")).use {
-                it.readText()
-            }
-            return parseRelease(body)
-        } finally {
-            connection.disconnect()
+        } catch (e: Exception) {
+            FrameLog.w(TAG, "Update check failed: ${e.message}")
+            null
         }
     }
 
@@ -345,6 +350,22 @@ object UpdateChecker {
         return null
     }
 
+    /**
+     * True when [file] is the APK this app downloaded itself: it has to live in the update
+     * directory, be named like an update and be the version we recorded for the download.
+     * MainActivity is exported, so an install request with an arbitrary path must be rejected
+     * (verification failure deletes the file).
+     */
+    fun isOwnDownload(context: Context, file: File): Boolean {
+        val pending = pendingDownloadVersion(context) ?: return false
+        val expected = apkFile(context, pending)
+        return try {
+            file.canonicalPath == expected.canonicalPath && file.exists()
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     // --- install --------------------------------------------------------------
 
     /** Android 8+ requires the user to allow installs from this app once. */
@@ -386,17 +407,20 @@ object UpdateChecker {
 
     /** Launches the package installer for a verified APK. */
     fun installApk(context: Context, file: File) {
-        val uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            file,
-        )
+        // The package installer of Android 5/6 cannot open a content:// URI ("parse error").
+        // Our download lives in the app's own external files dir, i.e. exactly where this app is
+        // allowed to hand out a file:// URI itself, so plain fromFile() is legal there.
+        val uri = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            Uri.fromFile(file)
+        } else {
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        }
         val intent = Intent(Intent.ACTION_VIEW)
             .setDataAndType(uri, "application/vnd.android.package-archive")
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(intent)
-        FrameLog.i(TAG, "Install prompt shown for ${file.name}")
+        FrameLog.i(TAG, "Install prompt shown for ${file.name} (${uri.scheme})")
     }
 
     // --- notifications --------------------------------------------------------

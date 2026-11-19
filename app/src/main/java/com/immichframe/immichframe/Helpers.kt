@@ -338,6 +338,17 @@ object Helpers {
         return client
     }
 
+    /**
+     * Generic HTTPS client with the app's TLS configuration (bundled CA list / Conscrypt on old
+     * Android). Used for hosts other than the Immich server, e.g. the GitHub API.
+     */
+    fun createDownloadClient(context: Context): OkHttpClient =
+        OkHttpClient.Builder()
+            .applyTls(context)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .build()
+
     private var reachabilityClient: OkHttpClient? = null
     private var reachabilityClientKey: String? = null
 
