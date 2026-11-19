@@ -315,6 +315,29 @@ object Helpers {
             .addConverterFactory(GsonConverterFactory.create()).build()
     }
 
+    /**
+     * Client for the video download. It has to be this client (not the VideoView's built-in
+     * HTTP stack) because the certificate pinning / client certificate (Cloudflare mTLS) and the
+     * Authorization header live in this OkHttp configuration. VideoView would do a plain
+     * connection and fail on every mTLS protected server.
+     */
+    private var videoClientCache: OkHttpClient? = null
+    private var videoClientKey: String? = null
+
+    fun videoClient(context: Context): OkHttpClient {
+        val key = "${ClientCertStore.stamp(context)}"
+        val cached = videoClientCache
+        if (cached != null && key == videoClientKey) return cached
+        val client = OkHttpClient.Builder()
+            .applyTls(context)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build()
+        videoClientCache = client
+        videoClientKey = key
+        return client
+    }
+
     private var reachabilityClient: OkHttpClient? = null
     private var reachabilityClientKey: String? = null
 

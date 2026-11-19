@@ -44,11 +44,13 @@ import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.view.WindowCompat
 import androidx.preference.PreferenceManager
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import okhttp3.Request
 import retrofit2.Call
 import retrofit2.Callback
 import retrofit2.Response
 import retrofit2.Retrofit
 import java.text.SimpleDateFormat
+import java.io.File
 import java.util.Calendar
 import java.util.Locale
 import kotlinx.coroutines.*
@@ -62,6 +64,9 @@ import androidx.core.view.isVisible
 class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "MainActivity"
+
+        /** Videos larger than this are streamed instead of downloaded (storage protection). */
+        private const val MAX_VIDEO_BYTES = 300L * 1024 * 1024
 
         /** True while a MainActivity instance exists; shown on the diagnostics screen. */
         @Volatile
@@ -106,6 +111,19 @@ class MainActivity : AppCompatActivity() {
     private var assetQueueGeneration = 0
     /** Bumped when a video starts so image decodes still in flight are dropped. */
     private var imageRenderGeneration = 0
+    /**
+     * True while an /api/Asset request is in flight. Without it, every tick of the slideshow
+     * timer during a slow or failing server started another request, and the answers cascaded
+     * into additional requests (the "slideshow speeds up / floods the server" bug).
+     */
+    private var assetFetchInFlight = false
+    /** Absolute path of the downloaded video, null while it is still being fetched. */
+    private var preparedVideoPath: String? = null
+    private val videoPrefetch = java.util.concurrent.Executors.newSingleThreadExecutor()
+    /** The download of the current video; cancelled as soon as the user navigates away. */
+    private var videoCall: okhttp3.Call? = null
+    /** Identifies the current download so a late callback cannot touch a newer one's files. */
+    private var videoDownloadToken = 0
     private var imageVisibilityBeforeVideo = Pair(View.GONE, View.GONE)
     /** Fires when playback never reaches the first frame; otherwise the video slot is stuck. */
     private val videoStallRunnable = Runnable {
@@ -514,12 +532,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refillAssetQueue() {
+        if (assetFetchInFlight) return
         val generation = assetQueueGeneration
+        assetFetchInFlight = true
         apiService.getAssets().enqueue(object : Callback<List<Helpers.AssetSummary>> {
             override fun onResponse(
                 call: Call<List<Helpers.AssetSummary>>,
                 response: Response<List<Helpers.AssetSummary>>
             ) {
+                if (generation == assetQueueGeneration) assetFetchInFlight = false
                 if (generation != assetQueueGeneration || useWebView) return
                 val assets = response.body().orEmpty()
                 if (response.isSuccessful && assets.isNotEmpty()) {
@@ -531,6 +552,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onFailure(call: Call<List<Helpers.AssetSummary>>, t: Throwable) {
+                if (generation == assetQueueGeneration) assetFetchInFlight = false
                 if (generation != assetQueueGeneration || useWebView) return
                 FrameLog.w(TAG, "Failed to load the asset list: ${t.localizedMessage}")
                 getNextRandomImage()
@@ -551,16 +573,8 @@ class MainActivity : AppCompatActivity() {
         imageView1.visibility = View.INVISIBLE
         imageView2.visibility = View.INVISIBLE
         txtPhotoInfo.text = ""
-
-        val uri = "${serverBaseUrl}api/Asset/$assetId/Asset".toUri()
-            .buildUpon()
-            .appendQueryParameter("assetType", "Video")
-            .build()
-        val headers = if (serverAuthSecret.isNotEmpty()) {
-            mapOf("Authorization" to "Bearer $serverAuthSecret")
-        } else {
-            emptyMap()
-        }
+        videoView.visibility = View.VISIBLE
+        preparedVideoPath = null
 
         videoView.setOnPreparedListener { player ->
             if (serverSettings.playAudio) {
@@ -582,14 +596,120 @@ class MainActivity : AppCompatActivity() {
             onVideoFinished()
             true
         }
-        videoView.visibility = View.VISIBLE
+
+        FrameLog.i(TAG, "Preparing video $assetId")
+        prepareVideo(assetId)
+    }
+
+    /**
+     * Downloads the video with the app's own HTTP client and then plays it from the file.
+     *
+     * VideoView's built-in stack does a plain HTTP request: no client certificate, no
+     * Authorization header and none of our TLS setup. Through the Cloudflare mTLS tunnel (and
+     * behind any authenticated proxy) such a request simply fails, so the download has to be done
+     * with the same OkHttp configuration the rest of the app uses.
+     */
+    private fun prepareVideo(assetId: String) {
+        val generation = assetQueueGeneration
+        val token = ++videoDownloadToken
+        val dir = File(cacheDir, "video")
+        runCatching { dir.mkdirs() }
+        val target = File(dir, "current.mp4")
+        // A per-download temp file: a cancelled download that finishes late must not be able to
+        // delete or overwrite the part file of the next video.
+        val part = File(dir, "video-$token.part")
+        val url = "${serverBaseUrl}api/Asset/$assetId/Asset?assetType=Video"
+
+        videoPrefetch.execute {
+            var ok = false
+            var reason = ""
+            try {
+                val request = Request.Builder().url(url).get().build()
+                val call = Helpers.videoClient(this).newCall(request)
+                videoCall = call
+                call.execute().use { response ->
+                    val length = response.body?.contentLength() ?: -1L
+                    if (!response.isSuccessful) {
+                        reason = "HTTP ${response.code}"
+                    } else if (length > MAX_VIDEO_BYTES) {
+                        // Do not let a single clip fill the device's storage; stream it instead.
+                        reason = "file too large (${length / (1024 * 1024)} MB)"
+                    } else {
+                        var copied = 0L
+                        response.body?.byteStream()?.use { input ->
+                            part.outputStream().use { output ->
+                                val buffer = ByteArray(64 * 1024)
+                                while (true) {
+                                    val read = input.read(buffer)
+                                    if (read < 0) break
+                                    copied += read
+                                    if (copied > MAX_VIDEO_BYTES) break
+                                    output.write(buffer, 0, read)
+                                    // The user moved on (or the screen went off): stop early
+                                    // instead of downloading a clip nobody will see.
+                                    if (token != videoDownloadToken) break
+                                }
+                            }
+                        }
+                        ok = token == videoDownloadToken && copied in 1..MAX_VIDEO_BYTES
+                        if (!ok) reason = "cancelled or too large"
+                    }
+                }
+            } catch (e: Exception) {
+                reason = e.message ?: e.javaClass.simpleName
+            } finally {
+                videoCall = null
+            }
+
+            handler.post {
+                // Only the newest download may touch files or start playback.
+                if (token != videoDownloadToken || generation != assetQueueGeneration || !isPlayingVideo) {
+                    part.delete()
+                    return@post
+                }
+                if (ok && part.renameTo(target)) {
+                    preparedVideoPath = target.absolutePath
+                    FrameLog.i(TAG, "Video $assetId downloaded (${target.length() / 1024} kB)")
+                    handler.removeCallbacks(videoStallRunnable)
+                    runCatching { videoView.setVideoPath(target.absolutePath) }
+                        .onFailure {
+                            FrameLog.w(TAG, "setVideoPath failed: ${it.message}")
+                            playVideoStreaming(assetId)
+                            return@post
+                        }
+                    handler.postDelayed(videoStallRunnable, 20_000)
+                } else {
+                    // Do not lose the video because the download failed; let the media framework
+                    // stream it instead (works for plain, unauthenticated servers).
+                    part.delete()
+                    FrameLog.w(TAG, "Video download failed ($reason), streaming instead")
+                    playVideoStreaming(assetId)
+                }
+            }
+        }
+    }
+
+    /** Last-resort path: let the media framework fetch the URL itself. */
+    private fun playVideoStreaming(assetId: String) {
+        val uri = "${serverBaseUrl}api/Asset/$assetId/Asset".toUri()
+            .buildUpon()
+            .appendQueryParameter("assetType", "Video")
+            .build()
+        val headers = if (serverAuthSecret.isNotEmpty()) {
+            mapOf("Authorization" to "Bearer $serverAuthSecret")
+        } else {
+            emptyMap()
+        }
+        handler.removeCallbacks(videoStallRunnable)
         videoView.setVideoURI(uri, headers)
-        handler.postDelayed(videoStallRunnable, 20_000)
-        FrameLog.i(TAG, "Playing video $assetId")
+        handler.postDelayed(videoStallRunnable, 30_000)
     }
 
     private fun onVideoFinished() {
         if (!isPlayingVideo) return
+        // stopVideo() calls stopPlayback(), which can fire the completion/error listener again.
+        // Clearing the flag first is what stops that from recursing forever.
+        isPlayingVideo = false
         stopVideo()
         getNextImage()
         startImageTimer()
@@ -598,11 +718,23 @@ class MainActivity : AppCompatActivity() {
     private fun stopVideo() {
         if (!isPlayingVideo) return
         isPlayingVideo = false
+        preparedVideoPath = null
+        cancelVideoDownload()
         handler.removeCallbacks(videoStallRunnable)
         runCatching { videoView.stopPlayback() }
         videoView.visibility = View.GONE
         imageView1.visibility = imageVisibilityBeforeVideo.first
         imageView2.visibility = imageVisibilityBeforeVideo.second
+    }
+
+    /**
+     * Stops the download of a video the user is no longer looking at. Without it the single
+     * prefetch thread served a stale clip first, delaying the next video by minutes.
+     */
+    private fun cancelVideoDownload() {
+        videoDownloadToken++
+        runCatching { videoCall?.cancel() }
+        videoCall = null
     }
 
     private fun getNextRandomImage() {
@@ -769,7 +901,12 @@ class MainActivity : AppCompatActivity() {
         // previous session must not survive it.
         stopVideo()
         assetQueue.clear()
+        assetFetchInFlight = false
+        preparedVideoPath = null
         assetQueueGeneration++
+        // The cached file of the previous session is dead weight (and can be several hundred MB);
+        // drop it in the background so a reload does not keep it until the activity dies.
+        videoPrefetch.execute { File(cacheDir, "video").deleteRecursively() }
 
         webView.visibility = if (useWebView) View.VISIBLE else View.GONE
         imageView1.visibility = if (useWebView) View.GONE else View.VISIBLE
@@ -1393,7 +1530,12 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         isFrameRunning = false
         rcpServer.stop()
-        stopVideo()
+        // Cancel first, then remove the cache synchronously: shutdownNow() would discard a
+        // cleanup task that was merely queued.
+        cancelVideoDownload()
+        runCatching { videoView.stopPlayback() }
+        runCatching { File(cacheDir, "video").deleteRecursively() }
+        runCatching { videoPrefetch.shutdownNow() }
         runCatching { unregisterReceiver(screenStateReceiver) }
         runCatching { unregisterReceiver(frameCommandReceiver) }
         runCatching {

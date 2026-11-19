@@ -91,6 +91,10 @@ natively between photos:
 * Playback is muted unless the server's *playAudio* option is on (server ≥ ImmichFrame v0.24).
 * Next/Previous skip a running video, Pause pauses it, and opening the settings or the scheduled
   screen-off stops it.
+* The video is downloaded with the app's own HTTP client (so the client certificate, the
+  Authorization header and the TLS setup apply - a plain VideoView request fails behind the
+  Cloudflare mTLS tunnel) and played from a temporary file; if the download fails the app falls
+  back to streaming the URL directly.
 * If a video never reaches its first frame (unsupported codec, unreachable file), it is skipped
   after 20 seconds instead of freezing the frame.
 * Servers without `/api/Asset` are detected automatically: the frame falls back to the plain
