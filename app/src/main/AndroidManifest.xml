@@ -130,8 +130,18 @@
         </receiver>
 
         <!-- Re-arms the wake alarm (and the keep-alive service) after a reboot.
-             BOOT_COMPLETED is a protected broadcast sent by the system, so the receiver has to be
-             exported: a non-exported receiver only receives broadcasts sent by this app. -->
+
+             exported="true" is needed for the vendor QUICKBOOT_POWERON actions, not for
+             BOOT_COMPLETED: the boot broadcast is sent by the system server, and
+             ActivityManager.checkComponentPermission() grants root/system access to
+             unexported components regardless of the exported flag (the decision is made per
+             sending UID, not per explicit/implicit broadcast). Some vendor firmware, however,
+             sends QUICKBOOT_POWERON from a vendor app with an ordinary UID, which such a
+             receiver would silently drop.
+
+             QUICKBOOT_POWERON is not a protected broadcast, so any app can send it. The receiver
+             only re-arms the alarm and starts the keep-alive service, which the app would do
+             anyway, so no android:permission is declared. -->
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
