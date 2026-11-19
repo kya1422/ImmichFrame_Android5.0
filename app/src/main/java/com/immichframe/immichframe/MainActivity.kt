@@ -67,6 +67,12 @@ class MainActivity : AppCompatActivity() {
 
         /** Videos larger than this are streamed instead of downloaded (storage protection). */
         private const val MAX_VIDEO_BYTES = 300L * 1024 * 1024
+        /**
+         * Whole-slot budget for fetching and starting a video. The socket timeouts alone are not
+         * enough: a stalled transfer of a large file can stay just under the read timeout for a
+         * very long time.
+         */
+        private const val FETCH_TIMEOUT_MS = 90_000L
 
         /** True while a MainActivity instance exists; shown on the diagnostics screen. */
         @Volatile
@@ -128,10 +134,14 @@ class MainActivity : AppCompatActivity() {
     private var videoDownloadToken = 0
     private var imageVisibilityBeforeVideo = Pair(View.GONE, View.GONE)
     /** Fires when playback never reaches the first frame; otherwise the video slot is stuck. */
-    /** Skips a video whose download never completes (slow or stalled connection). */
+    /**
+     * Hard time limit for a video slot: the download plus the start of playback. A big clip on a
+     * slow link would otherwise keep the slot occupied (and the slideshow paused) for minutes.
+     */
     private val videoFetchTimeoutRunnable = Runnable {
-        if (isPlayingVideo && videoView.visibility != View.VISIBLE) {
-            FrameLog.w(TAG, "Video fetch timed out, skipping")
+        if (!isPlayingVideo) return@Runnable
+        if (videoView.visibility != View.VISIBLE) {
+            FrameLog.w(TAG, "Video fetch timed out after ${FETCH_TIMEOUT_MS / 1000} s, skipping")
             onVideoFinished()
         }
     }
@@ -579,7 +589,6 @@ class MainActivity : AppCompatActivity() {
 
         // The photo stays on screen while the video is being fetched (a slow link through the
         // tunnel takes a while); the media surface is only shown once there is something to show.
-        imageVisibilityBeforeVideo = Pair(imageView1.visibility, imageView2.visibility)
         txtPhotoInfo.text = ""
         videoView.visibility = View.GONE
         preparedVideoPath = null
@@ -620,7 +629,7 @@ class MainActivity : AppCompatActivity() {
         // Hard limit for the whole fetch + start: a stalled download would otherwise freeze the
         // slideshow (the photo would stay up indefinitely).
         handler.removeCallbacks(videoFetchTimeoutRunnable)
-        handler.postDelayed(videoFetchTimeoutRunnable, 90_000)
+        handler.postDelayed(videoFetchTimeoutRunnable, FETCH_TIMEOUT_MS)
     }
 
     /**
@@ -664,6 +673,7 @@ class MainActivity : AppCompatActivity() {
                         reason = "file too large (${length / (1024 * 1024)} MB)"
                     } else {
                         var copied = 0L
+                        val deadline = System.currentTimeMillis() + FETCH_TIMEOUT_MS
                         response.body?.byteStream()?.use { input ->
                             part.outputStream().use { output ->
                                 val buffer = ByteArray(64 * 1024)
@@ -676,11 +686,17 @@ class MainActivity : AppCompatActivity() {
                                     // The user moved on (or the screen went off): stop early
                                     // instead of downloading a clip nobody will see.
                                     if (token != videoDownloadToken) break
+                                    // The slot's time budget: stop a transfer that keeps
+                                    // trickling but will never finish in time.
+                                    if (System.currentTimeMillis() > deadline) break
                                 }
                             }
                         }
-                        ok = token == videoDownloadToken && copied in 1..MAX_VIDEO_BYTES
-                        if (!ok) reason = "cancelled or too large"
+                        val finished = System.currentTimeMillis() <= deadline
+                        ok = token == videoDownloadToken && finished && copied in 1..MAX_VIDEO_BYTES
+                        if (!ok) {
+                            reason = if (!finished) "time budget exceeded" else "cancelled or too large"
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -1005,8 +1021,13 @@ class MainActivity : AppCompatActivity() {
 
                 /**
                  * Legacy variant. The WebResourceRequest version below only exists from API 23,
-                 * so on the d-01H (Android 5.1) nothing would ever be called - no error page and
-                 * no retry when the server goes away.
+                 * so on the d-01H (Android 5.1) this is the only callback that exists - without
+                 * it there was no error page and no retry when the server went away.
+                 *
+                 * On API 23+ this callback is reached only when the platform itself calls it (its
+                 * default 3-argument implementation forwards main-frame errors here). Our
+                 * 3-argument override deliberately does not call super, so the two never both
+                 * run.
                  */
                 @Suppress("DEPRECATION", "OverridingDeprecatedMember")
                 override fun onReceivedError(
@@ -1026,7 +1047,10 @@ class MainActivity : AppCompatActivity() {
                     request: WebResourceRequest?,
                     error: WebResourceError?
                 ) {
-                    super.onReceivedError(view, request, error)
+                    // super must NOT be called: the default implementation forwards a main-frame
+                    // error to the legacy 4-argument callback above, which would run the error
+                    // page and the retry a second time. Because super is skipped, exactly one of
+                    // the two callbacks handles each error.
 
                     // Sub-resource failures (XHR, images, event streams) are the page's own
                     // business. Reacting to them was the real bug: the reload below cancels any
