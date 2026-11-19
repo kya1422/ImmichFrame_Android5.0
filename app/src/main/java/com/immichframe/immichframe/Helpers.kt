@@ -124,6 +124,12 @@ object Helpers {
         val imageLocation: String
     )
 
+    /** Minimal view of the server's AssetResponseDto; [type] is "image" or "video". */
+    data class AssetSummary(
+        val id: String,
+        val type: String
+    )
+
     data class ServerSettings(
         val margin: String,
         val interval: Int,
@@ -147,7 +153,9 @@ object Helpers {
         val imageZoom: Boolean,
         val imageFill: Boolean,
         val layout: String,
-        val language: String
+        val language: String,
+        // Older servers do not send this field at all; Gson leaves it false (= muted).
+        val playAudio: Boolean = false
     )
 
     data class Weather(
@@ -162,6 +170,9 @@ object Helpers {
     interface ApiService {
         @GET("api/Asset/RandomImageAndInfo")
         fun getImageData(): Call<ImageResponse>
+
+        @GET("api/Asset")
+        fun getAssets(): Call<List<AssetSummary>>
 
         @GET("api/Config")
         fun getServerSettings(): Call<ServerSettings>

@@ -81,6 +81,21 @@ The APKs of every release are signed with the same key (see below), so updates i
 existing app. Updates installed from a *different* build (for example the upstream project's
 debug build) need one uninstall first, because Android refuses to update across signing keys.
 
+## 🎬 Video playback (non-WebView mode)
+
+When *Use WebView?* is off and the Immich server has videos in the album, the frame plays them
+natively between photos:
+
+* The app asks `/api/Asset` for the album order; a `video` asset becomes a playback slot, images
+  still come from `/api/Asset/RandomImageAndInfo` (photo date, location and split view keep working).
+* Playback is muted unless the server's *playAudio* option is on (server ≥ ImmichFrame v0.24).
+* Next/Previous skip a running video, Pause pauses it, and opening the settings or the scheduled
+  screen-off stops it.
+* If a video never reaches its first frame (unsupported codec, unreachable file), it is skipped
+  after 20 seconds instead of freezing the frame.
+* Servers without `/api/Asset` are detected automatically: the frame falls back to the plain
+  image slideshow, exactly as before.
+
 ## 🔏 Release signing
 
 The APKs attached to the GitHub releases are signed with a **stable key** so that a new release
