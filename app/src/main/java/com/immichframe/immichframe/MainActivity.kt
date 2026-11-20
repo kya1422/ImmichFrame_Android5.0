@@ -74,6 +74,12 @@ class MainActivity : AppCompatActivity() {
          */
         private const val FETCH_TIMEOUT_MS = 90_000L
 
+        /** Undecodable photos retried back to back before the frame starts waiting. */
+        private const val IMMEDIATE_IMAGE_RETRIES = 3
+
+        /** How long to wait before fetching again once the failures pile up. */
+        private const val IMAGE_RETRY_DELAY_MS = 5_000L
+
         /** True while a MainActivity instance exists; shown on the diagnostics screen. */
         @Volatile
         var isFrameRunning = false
@@ -117,6 +123,9 @@ class MainActivity : AppCompatActivity() {
     private var assetQueueGeneration = 0
     /** Bumped when a video starts so image decodes still in flight are dropped. */
     private var imageRenderGeneration = 0
+
+    /** Consecutive photos the decoder could not handle; reset once one is displayed. */
+    private var consecutiveDecodeFailures = 0
     /**
      * True while an /api/Asset request is in flight. Without it, every tick of the slideshow
      * timer during a slow or failing server started another request, and the answers cascaded
@@ -387,7 +396,7 @@ class MainActivity : AppCompatActivity() {
             val image = randomBitmap
             if (image == null) {
                 withContext(Dispatchers.Main) {
-                    if (renderGeneration == imageRenderGeneration) getNextImage()
+                    if (renderGeneration == imageRenderGeneration) retryImageAfterDecodeFailure()
                 }
                 return@launch
             }
@@ -447,6 +456,7 @@ class MainActivity : AppCompatActivity() {
                     thumb.recycle()
                     return@withContext
                 }
+                consecutiveDecodeFailures = 0
                 updateUI(finalImage, thumb, isMerged, imageResponse, cachedPortrait)
             }
         }
@@ -580,7 +590,31 @@ class MainActivity : AppCompatActivity() {
      * an empty queue refills from /api/Asset first. Without a queue (or on any error) this falls
      * back to the RandomImageAndInfo path, i.e. exactly the behaviour before video support.
      */
+    /**
+     * Skipping an undecodable photo must not turn into a tight request loop: a server that keeps
+     * returning a broken payload would be hit again as fast as it can answer. Retry the first
+     * few immediately (a single bad photo is normal), then leave a few seconds in between.
+     */
+    private fun retryImageAfterDecodeFailure() {
+        consecutiveDecodeFailures++
+        if (consecutiveDecodeFailures < IMMEDIATE_IMAGE_RETRIES) {
+            getNextImage()
+            return
+        }
+        FrameLog.w(
+            TAG,
+            "Skipping the next image for ${IMAGE_RETRY_DELAY_MS / 1000}s after " +
+                "$consecutiveDecodeFailures undecodable photos"
+        )
+        handler.removeCallbacks(imageRetryRunnable)
+        handler.postDelayed(imageRetryRunnable, IMAGE_RETRY_DELAY_MS)
+    }
+
+    private val imageRetryRunnable = Runnable { getNextImage() }
+
     private fun getNextImage() {
+        // A queued retry must not survive into the next request.
+        handler.removeCallbacks(imageRetryRunnable)
         stopVideo()
         val next = assetQueue.removeFirstOrNull()
         when {

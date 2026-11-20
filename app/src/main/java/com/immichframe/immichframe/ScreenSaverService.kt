@@ -65,6 +65,9 @@ class ScreenSaverService : DreamService() {
     private var showCurrentDate = true
     private var currentWeather = ""
     private var isImageTimerRunning = false
+
+    /** Consecutive photos the decoder could not handle; reset as soon as one succeeds. */
+    private var consecutiveDecodeFailures = 0
     private val handler = Handler(Looper.getMainLooper())
     private var previousImage: Helpers.ImageResponse? = null
     private var currentImage: Helpers.ImageResponse? = null
@@ -145,6 +148,8 @@ class ScreenSaverService : DreamService() {
         webViewRetryScope?.cancel()
         webViewRetryScope = null
         stopImageTimer()
+        handler.removeCallbacks(imageRetryRunnable)
+        consecutiveDecodeFailures = 0
         releaseWakeLock()
         handler.removeCallbacksAndMessages(null)
     }
@@ -225,7 +230,7 @@ class ScreenSaverService : DreamService() {
             }
             val image = randomBitmap
             if (image == null) {
-                withContext(Dispatchers.Main) { getNextImage() }
+                withContext(Dispatchers.Main) { retryImageAfterDecodeFailure() }
                 return@launch
             }
             val thumb = thumbHashBitmap ?: Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
@@ -270,6 +275,7 @@ class ScreenSaverService : DreamService() {
 
             val finalImage = requireNotNull(randomBitmap)
             withContext(Dispatchers.Main) {
+                consecutiveDecodeFailures = 0
                 // Hand the snapshot over instead of letting updateUI() read the mutable field.
                 updateUI(finalImage, thumb, isMerged, imageResponse, cachedPortrait)
             }
@@ -397,7 +403,33 @@ class ScreenSaverService : DreamService() {
         }
     }
 
+    /**
+     * A photo the device cannot decode is skipped, but skipping it must not become a tight loop:
+     * a server that keeps returning a broken payload would otherwise be hit with one request per
+     * round trip, forever. The first few failures are retried immediately (one bad photo in a row
+     * is normal), after that the next attempt waits a few seconds, which still recovers quickly
+     * once the server is healthy again.
+     */
+    private fun retryImageAfterDecodeFailure() {
+        consecutiveDecodeFailures++
+        if (consecutiveDecodeFailures < IMMEDIATE_IMAGE_RETRIES) {
+            getNextImage()
+            return
+        }
+        FrameLog.w(
+            "screensaver",
+            "Skipping the next image for ${IMAGE_RETRY_DELAY_MS / 1000}s after " +
+                "$consecutiveDecodeFailures undecodable photos"
+        )
+        handler.removeCallbacks(imageRetryRunnable)
+        handler.postDelayed(imageRetryRunnable, IMAGE_RETRY_DELAY_MS)
+    }
+
+    private val imageRetryRunnable = Runnable { getNextImage() }
+
     private fun getNextImage() {
+        // A retry that is already queued must not be added to (the timer keeps ticking too).
+        handler.removeCallbacks(imageRetryRunnable)
         apiService.getImageData().enqueue(object : Callback<Helpers.ImageResponse> {
             override fun onResponse(
                 call: Call<Helpers.ImageResponse>,
@@ -700,6 +732,12 @@ class ScreenSaverService : DreamService() {
     }
 
     private companion object {
+        /** Failures retried back to back before the frame starts waiting. */
+        private const val IMMEDIATE_IMAGE_RETRIES = 3
+
+        /** How long to wait before trying again once the failures pile up. */
+        private const val IMAGE_RETRY_DELAY_MS = 5_000L
+
         /** Renewed on every slideshow tick; see [acquireWakeLock]. */
         const val WAKE_LOCK_TIMEOUT_MS = 120 * 60 * 1000L
     }
@@ -717,10 +755,18 @@ class ScreenSaverService : DreamService() {
             val powerManager = getSystemService(POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK, "ImmichFrame::ScreenSaverWakeLock"
-            )
+            ).also {
+                // A wake lock is reference counted by default: every acquire() adds a count and
+                // release() only takes one off. Renewing on each tick would therefore need one
+                // release per renewal, and the single release in onDreamingStopped() left the
+                // lock held - the CPU could not sleep after the screensaver closed. With this
+                // off, acquire() only re-arms the timeout and one release() undoes them all.
+                it.setReferenceCounted(false)
+            }
         }
         // Renew before the timeout can expire. Waiting for isHeld == false would couple this to
         // the ROM releasing the lock exactly on time, and a longer interval would come too late.
+        // Safe to call on every tick now that the lock is not reference counted.
         wakeLock?.acquire(WAKE_LOCK_TIMEOUT_MS)
     }
 
